@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "sources": [
+    "docs/superpowers/specs/2026-10-19-hh-agent-design.md",
+    "docs/research/2026-10-21-hh-first-application.md"
+  ],
+  "facts": [
+    {"id": "python_backend", "ru": "Я Python backend-разработчик.", "en": "I am a Python backend developer.", "tags": ["python", "backend"]},
+    {"id": "fastapi", "ru": "Разрабатывал backend на FastAPI.", "en": "I have developed backend services with FastAPI.", "tags": ["fastapi", "async"]},
+    {"id": "django_drf", "ru": "Работал с Django и Django REST Framework.", "en": "I have worked with Django and Django REST Framework.", "tags": ["django", "drf"]},
+    {"id": "postgresql", "ru": "Работал с PostgreSQL.", "en": "I have worked with PostgreSQL.", "tags": ["postgresql", "postgres", "sql"]},
+    {"id": "mongodb", "ru": "Работал с MongoDB.", "en": "I have worked with MongoDB.", "tags": ["mongodb", "mongo"]},
+    {"id": "redis", "ru": "Работал с Redis.", "en": "I have worked with Redis.", "tags": ["redis", "cache"]},
+    {"id": "celery", "ru": "Использовал Celery для фоновых задач.", "en": "I have used Celery for background tasks.", "tags": ["celery", "task"]},
+    {"id": "docker", "ru": "Использовал Docker.", "en": "I have used Docker.", "tags": ["docker", "container"]},
+    {"id": "ci_cd", "ru": "Настраивал CI/CD.", "en": "I have configured CI/CD.", "tags": ["ci/cd", "ci cd", "cicd"]},
+    {"id": "payments", "ru": "Разрабатывал платёжные интеграции.", "en": "I have developed payment integrations.", "tags": ["платёж", "платеж", "payment", "финтех", "fintech"]},
+    {"id": "oauth", "ru": "Работал с OAuth.", "en": "I have worked with OAuth.", "tags": ["oauth", "авторизац", "authentication"]},
+    {"id": "telegram", "ru": "Разрабатывал Telegram-ботов.", "en": "I have developed Telegram bots.", "tags": ["telegram", "телеграм", "бот"]},
+    {"id": "llm", "ru": "Занимался интеграцией LLM.", "en": "I have worked on LLM integrations.", "tags": ["llm", "gpt", "vision", "ai", "ии"]},
+    {"id": "fitstars_ai", "ru": "В FitStars разрабатывал асинхронный backend на FastAPI для AI-приложения: интегрировал GPT/Vision, реализовал контекстный AI-чат, валидацию структурированных ответов и guardrails.", "en": "At FitStars, I developed an asynchronous FastAPI backend for an AI application: integrated GPT/Vision and implemented a contextual AI chat, structured-response validation and guardrails.", "tags": ["llm", "gpt", "vision", "guardrails", "ai", "ии"]},
+    {"id": "api_integration", "ru": "В финтех-проектах разрабатывал API и интеграции с внешними системами.", "en": "In fintech projects, I developed APIs and integrations with external systems.", "tags": ["api", "integration", "интеграц", "финтех", "fintech"]},
+    {"id": "nginx", "ru": "Настраивал развёртывание через Nginx.", "en": "I have configured deployment with Nginx.", "tags": ["nginx", "deploy", "развёртыв", "развертыв"]}
+  ]
+}

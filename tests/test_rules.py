@@ -56,3 +56,9 @@ class SelectionTests(unittest.TestCase):
 
     def test_unparseable_salary_requires_clarification(self):
         self.assertEqual(evaluate(vacancy(title="Senior Python",salary=parse_salary("по договоренности ???"))).status,"needs_clarification")
+
+    def test_mentoring_by_senior_is_not_the_vacancy_grade(self):
+        self.assertEqual(evaluate(vacancy(title="Python developer",description="Python. Работать с senior разработчиками, наставник senior.")).status,"needs_clarification")
+
+    def test_explicit_grade_in_requirements_is_accepted(self):
+        self.assertEqual(evaluate(vacancy(title="Python developer",description="Python. Требуемый уровень: Middle+.")).status,"ready")

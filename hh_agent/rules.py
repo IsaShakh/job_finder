@@ -36,7 +36,8 @@ def evaluate(vacancy):
         return Decision("rejected", "Указаны командировки")
     if re.search(r"(?:только|обязательно|необходимо|нужно|must|only).{0,55}(?:прожива|находи|москв|рф|росси|resid|located)|(?:удал[её]н\w*|remote).{0,30}(?:из |within |from )", text):
         return Decision("needs_clarification", "Нужно уточнить территориальные ограничения удалённой работы")
-    middle = bool(re.search(r"\b(?:middle|mid|senior|lead|principal|staff)\b|мид[д]?л|сеньор|сениор|ведущ\w*|старший|руководител", text))
+    grade_context=vacancy.title.lower()+" "+" ".join(re.findall(r"(?:ищем|вакансия|уровень|позиция|грейд|looking for|position|level|grade)[:\s-]*([^.!?\n]{0,60})",text))
+    middle = bool(re.search(r"\b(?:middle|mid|senior|lead|principal|staff)\b|мид[д]?л|сеньор|сениор|ведущ\w*|старший|руководител", grade_context))
     junior = bool(re.search(r"\b(?:junior|trainee|intern)\b|джун|стаж[её]р", vacancy.title.lower()))
     salary = vacancy.salary
     if salary is None:

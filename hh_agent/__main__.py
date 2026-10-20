@@ -1,0 +1,248 @@
+import argparse
+import asyncio
+import fcntl
+import getpass
+import os
+import secrets
+import sys
+import time
+from contextlib import contextmanager
+from pathlib import Path
+
+import httpx
+from dotenv import set_key
+from .config import Config
+from .store import Store
+
+
+@contextmanager
+def process_lock(state_dir):
+    state_dir.mkdir(parents=True,exist_ok=True)
+    os.chmod(state_dir,0o700)
+    with (state_dir/"agent.lock").open("a+") as lock:
+        try:
+            fcntl.flock(lock.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError("Агент уже запущен. Сначала остановите другой экземпляр") from None
+        try:
+            yield
+        finally:
+            fcntl.flock(lock.fileno(),fcntl.LOCK_UN)
+
+
+def save_env_values(path, values):
+    path.parent.mkdir(parents=True,exist_ok=True)
+    if not path.exists():
+        fd=os.open(str(path),os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
+        os.close(fd)
+    os.chmod(path,0o600)
+    for key,value in values.items():
+        set_key(str(path),key,str(value),quote_mode="always")
+    os.chmod(path,0o600)
+
+
+def initialize(root):
+    root.mkdir(parents=True,exist_ok=True)
+    path=root/".env"
+    if not path.exists():
+        example=Path(__file__).resolve().parents[1]/".env.example"
+        content=example.read_text(encoding="utf-8") if example.exists() else "HH_LIVE=false\n"
+        fd=os.open(str(path),os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+        with os.fdopen(fd,"w",encoding="utf-8") as target:
+            target.write(content)
+    state=root/".state"
+    state.mkdir(exist_ok=True)
+    os.chmod(state,0o700)
+    print("Локальные настройки подготовлены: "+str(path))
+
+
+def configure(root):
+    initialize(root)
+    config=Config.load(root)
+    print("Ключи сохраняются только в .env на этом компьютере. Ввод ключей скрыт.")
+    values={}
+    token=getpass.getpass("Токен Telegram-бота от @BotFather (Enter — оставить): ").strip()
+    if token:
+        values["TELEGRAM_BOT_TOKEN"]=token
+    base=input("Адрес API модели ["+config.llm_base_url+"]: ").strip()
+    if base:
+        values["LLM_BASE_URL"]=base
+    key=getpass.getpass("API-ключ модели (Enter — оставить): ").strip()
+    if key:
+        values["LLM_API_KEY"]=key
+    model=input("Название модели (Enter — оставить): ").strip()
+    if model:
+        values["LLM_MODEL"]=model
+    save_env_values(root/".env",values)
+    Config.load(root)
+    print("Настройки сохранены. Теперь выполните: python -m hh_agent pair")
+
+
+async def pair(config):
+    if not config.telegram_token:
+        raise ValueError("Сначала сохраните токен бота командой configure")
+    code=secrets.token_urlsafe(18)
+    base="https://api.telegram.org/bot"+config.telegram_token+"/"
+    async with httpx.AsyncClient(timeout=40,follow_redirects=False) as client:
+        async def call(method,payload):
+            try:
+                response=await client.post(base+method,json=payload)
+                data=response.json()
+                if not data.get("ok"):
+                    raise ValueError("Telegram отклонил запрос. Проверьте токен и отсутствие другого бота-поллера")
+                return data["result"]
+            except httpx.HTTPError:
+                raise ValueError("Telegram недоступен. Проверьте подключение") from None
+        webhook=await call("getWebhookInfo",{})
+        if webhook.get("url"):
+            raise ValueError("У бота уже настроен webhook. Используйте отдельного бота для агента")
+        me=await call("getMe",{})
+        print("Откройте личный чат https://t.me/"+me["username"])
+        print("Отправьте ему эту одноразовую команду в течение 5 минут:\n/start "+code)
+        offset=0
+        deadline=time.monotonic()+300
+        while time.monotonic()<deadline:
+            updates=await call("getUpdates",{"offset":offset,"timeout":20,"allowed_updates":["message","callback_query"]})
+            for update in updates:
+                offset=update["update_id"]+1
+                message=update.get("message",{})
+                sender=message.get("from",{})
+                chat=message.get("chat",{})
+                if message.get("text")=="/start "+code and chat.get("type")=="private" and sender.get("id")==chat.get("id") and not sender.get("is_bot"):
+                    save_env_values(config.root/".env",{"TELEGRAM_OWNER_ID":sender["id"]})
+                    store=Store(config.db_path)
+                    store.set("telegram_offset",offset)
+                    store.enqueue("Telegram привязан. Агент в режиме просмотра. /help — команды.")
+                    store.close()
+                    print("Владелец привязан. Запустите агента командой run.")
+                    return
+        raise ValueError("Время привязки истекло. Запустите pair снова")
+
+
+def doctor(config):
+    checks=[("Токен Telegram",bool(config.telegram_token)),("Владелец Telegram",config.owner_id>0),
+            ("Ключ и модель для писем",bool(config.llm_api_key and config.llm_model)),
+            ("Профиль браузера создан (вход проверяется отдельно)",config.profile_dir.exists()),
+            ("Локальный Chromium",bool(list((config.root/".cache/ms-playwright").glob("chromium-*"))))]
+    print("Режим: "+("отправка включена; состояние паузы хранится отдельно" if config.live else "просмотр, без отправки"))
+    for label,ok in checks:
+        print(("✓ " if ok else "○ ")+label)
+    print("Проверка локальная: токены и вход на сайте пока не проверялись по сети.")
+
+
+async def browser_command(config, command):
+    from playwright.async_api import async_playwright
+    from .browser import Browser
+    from .engine import Engine
+    from .letters import LetterGenerator
+    from .telegram import Telegram, TelegramError
+    if command=="run" and (not config.telegram_token or config.owner_id<=0):
+        raise ValueError("Сначала настройте Telegram: configure, затем pair")
+    if command=="run" and config.live and not (config.llm_api_key and config.llm_model):
+        raise ValueError("Для отправки настройте API-ключ и модель; просмотр работает без них")
+    os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH",str(config.root/".cache/ms-playwright"))
+    config.profile_dir.mkdir(parents=True,exist_ok=True)
+    os.chmod(config.profile_dir,0o700)
+    store=Store(config.db_path)
+    store.recover()
+    if store.rows(["unknown"],limit=1):
+        store.pause(True)
+        store.set("reconcile_requested",True)
+    try:
+        async with async_playwright() as pw:
+            context=await pw.chromium.launch_persistent_context(str(config.profile_dir),headless=False if command=="login" else config.headless,locale="ru-RU",viewport={"width":1280,"height":900})
+            try:
+                page=context.pages[0] if context.pages else await context.new_page()
+                browser=Browser(page,config.resume_id)
+                if command=="login":
+                    await browser.goto("https://hh.ru/")
+                    print("Войдите в HH в открывшемся окне. Пароль и код вводите только на сайте.")
+                    await asyncio.to_thread(input,"После входа нажмите Enter здесь: ")
+                    await browser.goto("https://hh.ru/resume/"+config.resume_id)
+                    await browser.check_access(require_auth=True)
+                    store.set("browser_blocked",False)
+                    print("Вход подтверждён. Сессия сохранена в отдельном профиле.")
+                    return
+                engine=Engine(config,store,browser,LetterGenerator(config))
+                if command=="search":
+                    await engine.search()
+                    print("Поиск закончен. Найденные вакансии сохранены; отправки не выполнялись.")
+                    return
+                bot=Telegram(config,store)
+                store.enqueue("Агент запущен. "+("Отправка разрешена; /resume продолжит очередь." if config.live else "Режим просмотра: отправка выключена.")+"\n/search — поиск, /pause — пауза, /queue — очередь.")
+                async def polling():
+                    while True:
+                        try:
+                            await bot.poll_once()
+                            await asyncio.sleep(0.2)
+                        except TelegramError:
+                            # Unknown control-plane state must stop future sends.
+                            store.pause(True)
+                            print("Telegram недоступен: отправка на паузе. Проверка повторится через 10 секунд.")
+                            await asyncio.sleep(10)
+                async def delivery():
+                    while True:
+                        try:
+                            await bot.flush()
+                        except TelegramError:
+                            store.pause(True)
+                            await asyncio.sleep(10)
+                        await asyncio.sleep(1.1)
+                print("Агент работает. Управление — в Telegram. Ctrl+C останавливает приложение.")
+                tasks=[asyncio.create_task(engine.run()),asyncio.create_task(polling()),asyncio.create_task(delivery())]
+                try:
+                    await asyncio.gather(*tasks)
+                finally:
+                    for task in tasks:
+                        task.cancel()
+                    await asyncio.gather(*tasks,return_exceptions=True)
+            finally:
+                await context.close()
+    finally:
+        store.close()
+
+
+def main(argv=None):
+    parser=argparse.ArgumentParser(description="Личный агент hh.ru с управлением из Telegram")
+    parser.add_argument("--root",type=Path,default=Path.cwd(),help="Папка проекта и его локальных настроек")
+    parser.add_argument("command",choices=["init","configure","pair","doctor","login","search","run","status"])
+    args=parser.parse_args(argv)
+    root=args.root.resolve()
+    try:
+        if args.command=="init":
+            initialize(root)
+            return 0
+        if args.command=="configure":
+            configure(root)
+            return 0
+        config=Config.load(root)
+        if args.command=="doctor":
+            doctor(config)
+            return 0
+        if args.command=="status":
+            store=Store(config.db_path)
+            print("Пауза: "+("да" if store.is_paused() else "нет"))
+            print(store.counts())
+            store.close()
+            return 0
+        with process_lock(config.state_dir):
+            if args.command=="pair":
+                asyncio.run(pair(config))
+            else:
+                asyncio.run(browser_command(config,args.command))
+        return 0
+    except KeyboardInterrupt:
+        print("Агент остановлен. Незавершённая отправка будет проверена при следующем запуске.")
+        return 0
+    except (ValueError,RuntimeError) as exc:
+        print(str(exc),file=sys.stderr)
+        return 1
+    except Exception as exc:
+        # Do not render HTTP/browser exceptions: they may contain credentials
+        # or page text. State and attempt journal remain available for recovery.
+        print("Операция остановлена ("+type(exc).__name__+"). Проверьте настройки и вход в HH.",file=sys.stderr)
+        return 1
+
+
+if __name__=="__main__":
+    sys.exit(main())

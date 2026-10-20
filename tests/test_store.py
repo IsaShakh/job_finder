@@ -71,3 +71,22 @@ class PersistenceTests(unittest.TestCase):
 
     def test_confirmed_pilot_is_never_queued(self):
         self.assertEqual(self.db.get("137924141")["status"],"sent")
+
+    def test_requeue_is_explicit_and_cannot_repeat_sent_or_unknown(self):
+        self.ready()
+        self.db.decide("123","rejected","тест")
+        self.db.command(71,"requeue:123")
+        self.assertEqual(self.db.get("123")["status"],"found")
+        self.assertIsNone(self.db.get("123")["letter"])
+        self.db.command(72,"requeue:137924141")
+        self.assertEqual(self.db.get("137924141")["status"],"sent")
+
+    def test_resume_after_login_clears_browser_block(self):
+        self.db.set("browser_blocked",True)
+        self.db.command(73,"resume")
+        self.assertFalse(self.db.setting("browser_blocked"))
+
+    def test_recent_history_is_not_dominated_by_old_records(self):
+        self.ready()
+        self.db.finish("123","sent","HH подтверждает")
+        self.assertEqual(self.db.rows(["sent"],limit=1,newest=True)[0]["id"],"123")

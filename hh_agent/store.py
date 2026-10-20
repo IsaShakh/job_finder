@@ -122,13 +122,13 @@ class Store:
             self.conn.execute("UPDATE jobs SET status='unknown',reason='Прерванная отправка: сначала проверить историю',updated=? WHERE status='sending'",(now(),))
             self.conn.execute("UPDATE attempts SET status='unknown',ended=? WHERE status='sending'",(now(),))
 
-    def rows(self, statuses=None, limit=50):
+    def rows(self, statuses=None, limit=50, newest=False):
         sql="SELECT id FROM jobs"
         args=[]
         if statuses:
             sql += " WHERE status IN ("+",".join("?" for _ in statuses)+")"
             args.extend(statuses)
-        sql += " ORDER BY created,id LIMIT ?"
+        sql += " ORDER BY updated DESC,id DESC LIMIT ?" if newest else " ORDER BY created,id LIMIT ?"
         args.append(limit)
         return [self.get(row[0]) for row in self.conn.execute(sql,args).fetchall()]
 
@@ -156,8 +156,14 @@ class Store:
                 return False
             if action in ("pause","resume"):
                 self._set("paused",action=="pause")
+                if action=="resume":
+                    self._set("browser_blocked",False)
             elif action in ("search","reconcile"):
                 self._set(action+"_requested",True)
+            elif action.startswith("requeue:"):
+                job_id=action.split(":",1)[1]
+                if job_id.isdigit():
+                    self.conn.execute("UPDATE jobs SET status='found',reason='',letter=NULL,updated=? WHERE id=? AND status IN ('rejected','needs_clarification','error','closed')",(now(),job_id))
             self._set("telegram_offset",update_id+1)
             if response:
                 self._enqueue(response)
