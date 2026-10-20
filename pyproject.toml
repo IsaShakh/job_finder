@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hh-personal-agent"
+version = "0.1.0"
+description = "Personal hh.ru application queue with Telegram control"
+requires-python = ">=3.9"
+dependencies = ["playwright>=1.51,<2", "httpx>=0.28,<1", "python-dotenv>=1,<2"]
+
+[project.scripts]
+hh-agent = "hh_agent.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["hh_agent*"]
+
+[tool.setuptools.package-data]
+hh_agent = ["profile.json"]

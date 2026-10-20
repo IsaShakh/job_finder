@@ -1,0 +1,11 @@
+.env
+.venv/
+.state/
+.cache/
+.superpowers/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.DS_Store
