@@ -25,7 +25,7 @@ class Store:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         version = self.conn.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1):
+        if version not in (0, 1, 2):
             raise ValueError("База создана более новой версией приложения")
         self.conn.executescript('''
         CREATE TABLE IF NOT EXISTS jobs (
@@ -38,7 +38,8 @@ class Store:
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS inbox (update_id INTEGER PRIMARY KEY, command TEXT, created TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS outbox (id INTEGER PRIMARY KEY, text TEXT NOT NULL, sent INTEGER NOT NULL DEFAULT 0, created TEXT NOT NULL);
-        PRAGMA user_version=1;
+        CREATE TABLE IF NOT EXISTS skip_events (id INTEGER PRIMARY KEY, job_id TEXT NOT NULL, reason TEXT NOT NULL, created TEXT NOT NULL, reported INTEGER NOT NULL DEFAULT 0);
+        PRAGMA user_version=2;
         ''')
         with self.conn:
             self.conn.execute("INSERT OR IGNORE INTO settings VALUES ('paused','true')")
@@ -70,7 +71,14 @@ class Store:
         if status not in STATES:
             raise ValueError("Неизвестный статус")
         with self.conn:
-            self.conn.execute("UPDATE jobs SET status=?,reason=?,updated=? WHERE id=? AND status NOT IN ('sent','sending','unknown')",(status,reason,now(),job_id))
+            previous=self.conn.execute("SELECT status,reason FROM jobs WHERE id=?",(job_id,)).fetchone()
+            cursor=self.conn.execute("UPDATE jobs SET status=?,reason=?,updated=? WHERE id=? AND status NOT IN ('sent','sending','unknown')",(status,reason,now(),job_id))
+            if cursor.rowcount:
+                self._record_skip(job_id,status,reason,previous)
+
+    def make_ready(self, job_id, letter, reason):
+        with self.conn:
+            self.conn.execute("UPDATE jobs SET letter=?,status='ready',reason=?,updated=? WHERE id=? AND status='found'",(dump(letter.to_dict()),reason,now(),job_id))
 
     def save_letter(self, job_id, letter):
         with self.conn:
@@ -107,13 +115,14 @@ class Store:
         if status not in STATES or (status == "sent" and not evidence.strip()):
             raise ValueError("Успешному отклику нужно подтверждение HH")
         with self.conn:
-            row=self.conn.execute("SELECT status FROM jobs WHERE id=?",(job_id,)).fetchone()
+            row=self.conn.execute("SELECT status,reason FROM jobs WHERE id=?",(job_id,)).fetchone()
             if not row or row[0] == "sent":
                 return
             if row[0] in ("sending","unknown") and status not in ("sent","unknown"):
                 status,reason="unknown","Отправка начата; нужно проверить историю"
             self.conn.execute("UPDATE jobs SET status=?,evidence=?,reason=?,updated=? WHERE id=?",(status,evidence,reason,now(),job_id))
             self.conn.execute("UPDATE attempts SET status=?,evidence=?,ended=? WHERE job_id=? AND status='sending'",(status,evidence,now(),job_id))
+            self._record_skip(job_id,status,reason,row)
             if notification:
                 self._enqueue(notification)
 
@@ -121,6 +130,21 @@ class Store:
         with self.conn:
             self.conn.execute("UPDATE jobs SET status='unknown',reason='Прерванная отправка: сначала проверить историю',updated=? WHERE status='sending'",(now(),))
             self.conn.execute("UPDATE attempts SET status='unknown',ended=? WHERE status='sending'",(now(),))
+            self.conn.execute("UPDATE jobs SET status='found',reason='Подготовка письма была прервана',updated=? WHERE status='ready' AND letter IS NULL",(now(),))
+
+    def _record_skip(self, job_id, status, reason, previous):
+        if status=='rejected' and 'предложено пройти тест' in reason and (not previous or previous[0]!='rejected' or previous[1]!=reason):
+            self.conn.execute("INSERT INTO skip_events(job_id,reason,created) VALUES(?,?,?)",(job_id,reason,now()))
+
+    def pending_skips(self):
+        return [dict(row) for row in self.conn.execute("SELECT * FROM skip_events WHERE reported=0 ORDER BY id")]
+
+    def queue_digest(self, text, day, skip_ids):
+        with self.conn:
+            self._enqueue(text)
+            self.conn.executemany("UPDATE skip_events SET reported=1 WHERE id=?",[(event_id,) for event_id in skip_ids])
+            self._set('digest_day',day)
+            self._set('last_digest_at',now())
 
     def rows(self, statuses=None, limit=50, newest=False):
         sql="SELECT id FROM jobs"

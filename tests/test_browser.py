@@ -30,13 +30,14 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
         self.page=await self.context.new_page()
         self.form=FORM
         self.detail=DETAIL
+        self.detail_status=200
         self.submits=0
         await self.page.expose_function("count_submit",self.count_submit)
         async def serve(route):
             url=route.request.url
             html=self.form if "vacancy_response" in url else self.detail
             html += "<script>document.querySelector('form')?.addEventListener('submit',()=>window.count_submit())</script>"
-            await route.fulfill(status=200,content_type="text/html; charset=utf-8",body=html)
+            await route.fulfill(status=200 if "vacancy_response" in url else self.detail_status,content_type="text/html; charset=utf-8",body=html)
         await self.context.route("**/*",serve)
         self.browser=Browser(self.page,RESUME,confirmation_timeout=0.2)
 
@@ -67,6 +68,22 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status,"rejected")
         self.assertEqual(self.submits,0)
         self.assertNotIn("vacancy_response",self.page.url)
+
+    async def test_split_banner_context_and_button_still_skips(self):
+        self.detail+='<div><span>Для отклика на вакансию</span><button>Пройти тест</button></div>'
+        self.assertEqual((await self.send()).status,"rejected")
+        self.assertEqual(self.submits,0)
+
+    async def test_employer_prose_is_not_send_evidence(self):
+        self.detail=self.detail.replace('Python FastAPI для API','Python. Если вы откликнулись на нашу вакансию, мы свяжемся с вами. <div>Вы откликнулись</div>')
+        vacancy=await self.browser.read('123')
+        self.assertFalse(vacancy.already_applied)
+        self.assertEqual((await self.browser.reconcile('123')).status,'unknown')
+
+    async def test_deleted_vacancy_is_closed_not_auth_failure(self):
+        self.detail_status=404
+        self.detail='<h1>Вакансия не найдена</h1>'
+        self.assertTrue((await self.browser.read('123')).closed)
 
     async def test_new_form_test_is_skipped(self):
         self.form=self.form.replace('<textarea','<p>Пройдите тест работодателя</p><textarea')

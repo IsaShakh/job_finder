@@ -44,11 +44,13 @@ class Engine:
                 self.store.finish(job_id,"sent","Страница HH подтверждает ранее отправленный отклик")
                 return
             decision=evaluate(vacancy)
-            self.store.decide(job_id,decision.status,decision.reason)
             if decision.status=="ready":
-                self.store.save_letter(job_id,await self.writer.generate(vacancy))
-            elif decision.status=="needs_clarification":
-                self.store.enqueue("Нужно уточнение: "+vacancy.title+"\n"+vacancy.url+"\n"+decision.reason)
+                letter=await self.writer.generate(vacancy)
+                self.store.make_ready(job_id,letter,decision.reason)
+            else:
+                self.store.decide(job_id,decision.status,decision.reason)
+                if decision.status=="needs_clarification":
+                    self.store.enqueue("Нужно уточнение: "+vacancy.title+"\n"+vacancy.url+"\n"+decision.reason)
         except AttentionRequired as exc:
             self.attention(str(exc))
         except Exception as exc:
@@ -120,14 +122,15 @@ class Engine:
             except Exception as exc:
                 self.store.enqueue("Проверка отклика "+row["id"]+" не завершена: "+type(exc).__name__)
 
-    def digest(self):
+    def digest(self, skipped=None):
         labels={"found":"ждут чтения","ready":"готовы","sent":"отправлены","rejected":"отсеяны","needs_clarification":"уточнение","unknown":"результат неизвестен","error":"ошибки","closed":"закрыты","sending":"отправляются"}
         text="Сводка очереди\n"+"\n".join(labels.get(k,k)+": "+str(v) for k,v in self.store.counts().items())
-        today=datetime.now().astimezone().date().isoformat()
-        rows=self.store.rows(["rejected"],limit=100000)
-        skipped=[r for r in rows if "предложено пройти тест" in r["reason"] and datetime.fromisoformat(r["updated"]).astimezone().date().isoformat()==today]
+        cutoff=self.store.setting('last_digest_at','1970-01-01T00:00:00+00:00')
+        rows=[row for row in self.store.rows(limit=100000) if row['id']!='137924141']
+        text+='\n\nС предыдущей сводки: новых %s, подтверждено %s, отсеяно %s.' % (sum(row['created']>=cutoff for row in rows),sum(row['status']=='sent' and row['updated']>=cutoff for row in rows),sum(row['status']=='rejected' and row['updated']>=cutoff for row in rows))
+        skipped=self.store.pending_skips() if skipped is None else skipped
         if skipped:
-            text+="\n\nСегодня пропущены из-за теста:\n"+"\n".join(r["vacancy"].url+" — "+r["reason"] for r in skipped)
+            text+="\n\nПропуски из-за теста с предыдущей сводки:\n"+"\n".join('https://hh.ru/vacancy/'+r['job_id']+" — "+r["reason"] for r in skipped)
         return text
 
     async def tick(self):
@@ -156,8 +159,8 @@ class Engine:
             await self.prepare(found[0]["id"])
         day=datetime.now().astimezone().date().isoformat()
         if self.store.setting("digest_day")!=day:
-            self.store.enqueue(self.digest())
-            self.store.set("digest_day",day)
+            skipped=self.store.pending_skips()
+            self.store.queue_digest(self.digest(skipped),day,[row['id'] for row in skipped])
 
     async def run(self):
         while True:

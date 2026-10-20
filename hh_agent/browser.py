@@ -33,7 +33,7 @@ VISIBLE_TEXT = r'''(root) => {
  return out.join(' ').replace(/\s+/g,' ').trim();
 }'''
 TEST_RE = re.compile(r"(?:прой(?:ти|дите)|пройти|выполн(?:ить|ите)|начать|начните|пройти\s+онлайн).{0,90}(?:тест|задани)|(?:пройти|проходить).{0,35}тестирование",re.I)
-SENT_RE = re.compile(r"вы (?:уже )?отклик(?:нулись|ались)|отклик (?:уже )?отправлен|откликнуться повторно",re.I)
+SENT_RE = re.compile(r"^(?:вы\s+(?:уже\s+)?отклик(?:нулись|ались)|отклик\s+(?:уже\s+)?отправлен|откликнуться\s+повторно)$",re.I)
 
 
 def safe_hh_url(url):
@@ -55,12 +55,13 @@ class Browser:
             return ""
         return await locator.first.evaluate(VISIBLE_TEXT)
 
-    async def goto(self, url):
+    async def goto(self, url, allow_missing=False):
         response=await self.page.goto(safe_hh_url(url),wait_until="domcontentloaded",timeout=45000)
         safe_hh_url(self.page.url)
-        if response and response.status>=400:
-            raise AttentionRequired("HH вернул ошибку страницы (код %s)" % response.status)
         await self.check_access()
+        if response and response.status>=400 and not (allow_missing and response.status in (404,410)):
+            raise AttentionRequired("HH вернул ошибку страницы (код %s)" % response.status)
+        return response.status if response else None
 
     async def check_access(self, require_auth=False):
         safe_hh_url(self.page.url)
@@ -73,9 +74,13 @@ class Browser:
             raise AttentionRequired("Не удалось подтвердить вход в аккаунт HH")
 
     async def sent_evidence(self):
-        text=await self.text()
-        match=SENT_RE.search(text)
-        return (match.group(0)+" · "+self.page.url) if match else ""
+        for node in await self.page.get_by_text(SENT_RE).all():
+            if await node.evaluate('e=>!!e.closest(\'[data-qa="vacancy-description"],[data-qa="skills-element"],footer,header,nav,aside,textarea,input\')'):
+                continue
+            text=await node.evaluate(VISIBLE_TEXT)
+            if SENT_RE.fullmatch(text):
+                return text+" · "+self.page.url
+        return ""
 
     async def has_test(self):
         form=await self.text('#RESPONSE_MODAL_FORM_ID')
@@ -83,7 +88,7 @@ class Browser:
             return True
         # Vacancy-specific banner outside the form; unrelated site skill ads
         # do not qualify. Inspect local blocks, never concatenate the whole page.
-        candidates=self.page.locator('p,[role="alert"],[data-qa*="test"],a,button')
+        candidates=self.page.locator('p,span,div:not(:has(*)),[role="alert"],[data-qa*="test"],a,button')
         for node in await candidates.all():
             if await node.evaluate("e=>!!e.closest('footer,header,nav,aside')"):
                 continue
@@ -91,12 +96,27 @@ class Browser:
             on_response=urlparse(self.page.url).path=="/applicant/vacancy_response"
             if len(text)<900 and TEST_RE.search(text) and (on_response or re.search(r"ваканси|отклик|работодател",text,re.I)):
                 return True
+            if TEST_RE.search(text) and len(text)<200:
+                # A banner often splits context and CTA across sibling nodes.
+                # Inspect only a small nearby container, never the whole body.
+                parent=node.locator('..')
+                for _ in range(2):
+                    if await parent.evaluate("e=>['BODY','HTML','MAIN','NAV','HEADER','FOOTER','ASIDE'].includes(e.tagName)"):
+                        break
+                    nearby=await parent.evaluate(VISIBLE_TEXT)
+                    if len(nearby)>600:
+                        break
+                    if re.search(r"ваканси|отклик|работодател",nearby,re.I):
+                        return True
+                    parent=parent.locator('..')
         return False
 
     async def read(self, job_id):
         if not str(job_id).isdigit():
             raise ValueError("Некорректный ID вакансии")
-        await self.goto("https://hh.ru/vacancy/"+str(job_id))
+        status=await self.goto("https://hh.ru/vacancy/"+str(job_id),allow_missing=True)
+        if status in (404,410):
+            return Vacancy(str(job_id),"Вакансия недоступна","",closed=True)
         # Wait for real content, not a SPA skeleton, with a bounded timeout.
         try:
             await self.page.locator('[data-qa="vacancy-title"]').wait_for(timeout=10000)

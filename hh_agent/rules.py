@@ -36,9 +36,15 @@ def evaluate(vacancy):
         return Decision("rejected", "Указаны командировки")
     if re.search(r"(?:только|обязательно|необходимо|нужно|must|only).{0,55}(?:прожива|находи|москв|рф|росси|resid|located)|(?:удал[её]н\w*|remote).{0,30}(?:из |within |from )", text):
         return Decision("needs_clarification", "Нужно уточнить территориальные ограничения удалённой работы")
-    grade_context=vacancy.title.lower()+" "+" ".join(re.findall(r"(?:ищем|вакансия|уровень|позиция|грейд|looking for|position|level|grade)[:\s-]*([^.!?\n]{0,60})",text))
-    middle = bool(re.search(r"\b(?:middle|mid|senior|lead|principal|staff)\b|мид[д]?л|сеньор|сениор|ведущ\w*|старший|руководител", grade_context))
-    junior = bool(re.search(r"\b(?:junior|trainee|intern)\b|джун|стаж[её]р", vacancy.title.lower()))
+    grade_contexts=re.findall(r"(?:ищем|вакансия|уровень|позиция|грейд|looking for|position|level|grade)[:\s-]*([^.!?\n]{0,60})",text)
+    grade_context=vacancy.title.lower()+" "+" ".join(re.split(r'под руководством|с наставником|наставник|в команде с|работать с|under supervision|mentored by',part)[0] for part in grade_contexts)
+    middle_pattern=r"\b(?:middle|mid|senior|lead|principal|staff)\b|мид[д]?л|сеньор|сениор|ведущ\w*|старший|руководител|тимлид|техлид"
+    middle = bool(re.search(middle_pattern, grade_context))
+    junior = bool(re.search(r"\b(?:junior|trainee|intern)\b|джун|стаж[её]р", grade_context))
+    junior_title=bool(re.search(r"\b(?:junior|trainee|intern)\b|джун|стаж[её]р",vacancy.title.lower()))
+    if junior_title and not re.search(middle_pattern,vacancy.title.lower()):
+        explicitly_mixed=bool(re.search(r'(?:junior|джун\w*)\s*(?:/|или|or|-)\s*(?:middle|мидд?л)|рассматриваем\s+(?:также\s+)?middle',text))
+        middle=middle and explicitly_mixed
     salary = vacancy.salary
     if salary is None:
         if middle:

@@ -1,4 +1,7 @@
 import tempfile
+import asyncio
+import time
+from dataclasses import replace
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,7 +25,7 @@ class Site:
     async def read(self, job_id):
         if self.read_error:
             raise self.read_error
-        return self.current
+        return replace(self.current,id=job_id)
 
     async def apply(self, job, letter, gate):
         if self.pause_before_gate:
@@ -126,3 +129,51 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         await self.engine.reconcile()
         self.assertEqual(self.db.get("123")["status"],"sent")
         self.assertEqual(self.site.submits,0)
+
+    async def test_interrupted_letter_does_not_block_a_later_ready_job(self):
+        class InterruptedWriter:
+            async def generate(self, job):
+                raise asyncio.CancelledError()
+        self.db.discover(self.site.current)
+        self.engine.writer=InterruptedWriter()
+        with self.assertRaises(asyncio.CancelledError):
+            await self.engine.prepare('123')
+        self.db.recover()
+        self.assertEqual(self.db.get('123')['status'],'found')
+        self.engine.writer=Writer()
+        self.db.discover(vacancy(id='456',salary=Salary(200000)))
+        await self.engine.prepare('456')
+        self.db.pause(False)
+        self.db.set('last_search',time.time())
+        await self.engine.tick()
+        self.assertEqual(self.db.get('456')['status'],'sent')
+
+    async def test_legacy_ready_without_letter_is_repaired_on_restart(self):
+        self.db.discover(self.site.current)
+        self.db.decide('123','ready','подходит')
+        self.db.recover()
+        self.assertEqual(self.db.get('123')['status'],'found')
+
+    async def test_closed_job_does_not_block_next_job(self):
+        self.db.discover(self.site.current)
+        self.db.discover(vacancy(id='456',salary=Salary(200000)))
+        self.site.current=replace(self.site.current,closed=True)
+        await self.engine.prepare('123')
+        self.assertEqual(self.db.get('123')['status'],'closed')
+        self.site.current=replace(self.site.current,closed=False)
+        await self.engine.prepare('456')
+        self.assertEqual(self.db.get('456')['status'],'ready')
+
+    async def test_late_test_skip_is_reported_next_digest_even_next_day(self):
+        self.db.set('digest_day','2000-01-01')
+        self.db.set('last_search',time.time())
+        await self.engine.tick()
+        self.db.discover(self.site.current)
+        self.db.decide('123','rejected','Пропущена: предложено пройти тест')
+        # Day change after the first report; the event is now from yesterday.
+        with self.db.conn:
+            self.db.conn.execute("UPDATE jobs SET updated='2000-01-01T12:00:00+00:00' WHERE id='123'")
+        self.db.set('digest_day','2000-01-01')
+        await self.engine.tick()
+        messages='\n'.join(row['text'] for row in self.db.pending_messages())
+        self.assertIn('https://hh.ru/vacancy/123 — Пропущена: предложено пройти тест',messages)

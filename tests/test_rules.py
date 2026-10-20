@@ -62,3 +62,7 @@ class SelectionTests(unittest.TestCase):
 
     def test_explicit_grade_in_requirements_is_accepted(self):
         self.assertEqual(evaluate(vacancy(title="Python developer",description="Python. Требуемый уровень: Middle+.")).status,"ready")
+
+    def test_junior_with_senior_mentor_is_not_middle(self):
+        job=vacancy(title="Junior Python разработчик",description="Python. Ищем junior разработчика под руководством senior.")
+        self.assertEqual(evaluate(job).status,"rejected")
