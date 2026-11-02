@@ -1,0 +1,65 @@
+{
+  "source": "https://api.hh.ru/openapi/specification/public",
+  "paths": {
+    "/vacancies": [
+      {
+        "method": "POST",
+        "summary": "Публикация вакансии",
+        "operation_id": "publish-vacancy",
+        "tags": "- Управление вакансиями\n        - Управление вакансиями на уровне работодателя"
+      },
+      {
+        "method": "GET",
+        "summary": "Поиск по вакансиям",
+        "operation_id": "get-vacancies",
+        "tags": "- Поиск вакансий\n        - Поиск вакансий для соискателя"
+      }
+    ],
+    "/vacancies/{vacancy_id}": [
+      {
+        "method": "GET",
+        "summary": "Просмотр вакансии",
+        "operation_id": "get-vacancy",
+        "tags": "- Вакансии\n        - Управление вакансиями"
+      },
+      {
+        "method": "PUT",
+        "summary": "Редактирование вакансий",
+        "operation_id": "edit-vacancy",
+        "tags": "- Управление вакансиями\n        - Управление вакансиями на уровне работодателя"
+      }
+    ],
+    "/negotiations": [
+      {
+        "method": "GET",
+        "summary": "Список откликов/приглашений",
+        "operation_id": "get-negotiations",
+        "tags": "- Переписка (отклики/приглашения) для соискателя\n        - Отклики/приглашения работодателя\n        - Отклики/приглашения работодателя на уровне работодателя"
+      }
+    ],
+    "/resumes/mine": null,
+    "/me": [
+      {
+        "method": "GET",
+        "summary": "Информация о текущем пользователе",
+        "operation_id": "get-current-user-info",
+        "tags": "- Информация о соискателе\n        - Информация о менеджере\n        - Информация о приложении\n        - Информация о работодателе\n        - Информация об интеграции работодателя"
+      }
+    ],
+    "/token": [
+      {
+        "method": "POST",
+        "summary": "Получение access-токена",
+        "operation_id": "authorize",
+        "tags": "- Авторизация приложения\n        - Авторизация работодателя\n        - Авторизация соискателя"
+      },
+      {
+        "method": "DELETE",
+        "summary": "Инвалидация токена",
+        "operation_id": "invalidate-token",
+        "tags": "- Авторизация работодателя\n        - Авторизация соискателя\n        - Авторизация на уровне работодателя"
+      }
+    ]
+  },
+  "apply_to_vacancy_present": false
+}

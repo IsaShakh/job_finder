@@ -1,0 +1,40 @@
+[
+  {
+    "name": "search",
+    "url": "https://api.hh.ru/vacancies?text=python&per_page=1",
+    "status": 403,
+    "bytes": 81,
+    "errors": [
+      {
+        "type": "forbidden"
+      }
+    ]
+  },
+  {
+    "name": "vacancy_detail",
+    "url": "https://api.hh.ru/vacancies/137924141",
+    "status": 403,
+    "bytes": 81,
+    "errors": [
+      {
+        "type": "forbidden"
+      }
+    ]
+  },
+  {
+    "name": "dictionaries",
+    "url": "https://api.hh.ru/dictionaries",
+    "status": 200,
+    "bytes": 29333,
+    "summary": {},
+    "dictionary_count": 65
+  },
+  {
+    "name": "specification",
+    "url": "https://api.hh.ru/openapi/specification/public",
+    "status": 200,
+    "bytes": 1322029,
+    "path": "/private/tmp/hh-openapi-2026-10-21.yml",
+    "sha256": "c465d0a45c61ad282f9627d09a927296700d1748e792aa72cb581481a063121e"
+  }
+]

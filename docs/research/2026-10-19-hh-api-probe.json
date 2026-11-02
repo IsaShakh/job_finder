@@ -1,0 +1,168 @@
+{
+  "date": "2026-10-19",
+  "authentication": "none; no tokens or browser cookies used in HTTP checks",
+  "http_checks": [
+    {
+      "check": "vacancy_search",
+      "url": "https://api.hh.ru/vacancies?text=python&per_page=1",
+      "status": 403,
+      "content_type": "application/json; charset=UTF-8",
+      "bytes": 81,
+      "keys": [
+        "errors",
+        "request_id"
+      ],
+      "found": null,
+      "returned": 0,
+      "sample_ids": [],
+      "description": null,
+      "errors": [
+        {
+          "type": "forbidden"
+        }
+      ]
+    },
+    {
+      "check": "account",
+      "url": "https://api.hh.ru/me",
+      "status": 403,
+      "content_type": "application/json; charset=UTF-8",
+      "bytes": 107,
+      "keys": [
+        "description",
+        "errors",
+        "request_id"
+      ],
+      "description": "Forbidden",
+      "errors": [
+        {
+          "type": "forbidden"
+        }
+      ]
+    },
+    {
+      "check": "own_resumes",
+      "url": "https://api.hh.ru/resumes/mine",
+      "status": 403,
+      "content_type": "application/json; charset=UTF-8",
+      "bytes": 107,
+      "keys": [
+        "description",
+        "errors",
+        "request_id"
+      ],
+      "description": "Forbidden",
+      "errors": [
+        {
+          "type": "forbidden"
+        }
+      ]
+    },
+    {
+      "check": "applications",
+      "url": "https://api.hh.ru/negotiations",
+      "status": 403,
+      "content_type": "application/json; charset=UTF-8",
+      "bytes": 107,
+      "keys": [
+        "description",
+        "errors",
+        "request_id"
+      ],
+      "description": "Forbidden",
+      "errors": [
+        {
+          "type": "forbidden"
+        }
+      ]
+    }
+  ],
+  "reference_checks": [
+    {
+      "path": "dictionaries",
+      "status": 200,
+      "type": "dict",
+      "bytes": 29334,
+      "keys": [
+        "resume_access_type",
+        "setka_access_type",
+        "vacancy_search_order",
+        "vacancy_search_fields",
+        "vacancy_search_employment_form",
+        "gender",
+        "preferred_contact_type",
+        "travel_time",
+        "relocation_type",
+        "business_trip_readiness",
+        "resume_contacts_site_type",
+        "employer_type",
+        "employer_relation",
+        "negotiations_state",
+        "applicant_negotiation_status"
+      ],
+      "errors": null
+    },
+    {
+      "path": "areas",
+      "status": 200,
+      "type": "list",
+      "bytes": 2567741
+    }
+  ],
+  "current_spec": {
+    "source": "https://api.hh.ru/openapi/specification/public",
+    "sha256": "c465d0a45c61ad282f9627d09a927296700d1748e792aa72cb581481a063121e",
+    "operations": {
+      "/vacancies": [
+        {
+          "method": "post",
+          "operationId": "publish-vacancy",
+          "summary": "Публикация вакансии"
+        },
+        {
+          "method": "get",
+          "operationId": "get-vacancies",
+          "summary": "Поиск по вакансиям"
+        }
+      ],
+      "/me": [
+        {
+          "method": "get",
+          "operationId": "get-current-user-info",
+          "summary": "Информация о текущем пользователе"
+        }
+      ],
+      "/resumes/mine": null,
+      "/negotiations": [
+        {
+          "method": "get",
+          "operationId": "get-negotiations",
+          "summary": "Список откликов/приглашений"
+        }
+      ],
+      "/token": [
+        {
+          "method": "post",
+          "operationId": "authorize",
+          "summary": "Получение access-токена"
+        },
+        {
+          "method": "delete",
+          "operationId": "invalidate-token",
+          "summary": "Инвалидация токена"
+        }
+      ]
+    },
+    "apply_operation_id_present": false
+  },
+  "browser_observations": {
+    "developer_console": "User signed in manually; account type applicant; no registered application displayed.",
+    "registration_notice": "Обратите внимание, поддержка API для соискателей прекращена 15 декабря 2025",
+    "registration_audiences": [
+      "Только сотрудники работодателя",
+      "Сотрудники нескольких работодателей"
+    ],
+    "resume_page": "The user-provided resume opens in the signed-in browser with owner controls.",
+    "external_changes": "No application registered, no OAuth grant requested, no resume edited, no job application sent."
+  }
+}
