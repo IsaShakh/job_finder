@@ -76,6 +76,7 @@ class Vacancy:
     salary: Optional[Salary] = None          # minimum, maximum, currency, period, raw
     remote: Optional[bool] = None            # None = не подтверждено
     remote_geo: Optional[str] = None         # география удалёнки («только РФ», «из ЕС»…)
+    location: Optional[str] = None           # город/страна офиса (для релокации: «Москва», «Дубай»…)
     timezone: Optional[str] = None
     employment: Optional[str] = None         # занятость
     salary_gross: Optional[bool] = None      # налоговый режим зарплаты
@@ -126,7 +127,12 @@ class SourceAdapter(Protocol):
 
 ### 7.1 Россия (регион RU)
 
-- **Формат**: только удалёнка (`remote=False` → `rejected`; `remote=None` → `needs_clarification`).
+- **Формат**: удалёнка ИЛИ релокация/офис в **Москве** (уточнение 03.11.2026).
+  - `remote=True` → подходит;
+  - локация содержит Москву (офис/гибрид/релокация в Москву) → подходит, в карточке метка «офис/гибрид, Москва»;
+  - `remote=None` и Москвы нет → `needs_clarification`;
+  - `remote=False` и Москвы нет → `rejected`.
+- **Поиск по hh идёт двумя ветками** с дедупом между ними: удалёнка (`schedule=remote`) + Москва (`area=1`, с учётом релокации). У Habr/каналов фильтрация по локации не применяется — решает правило выше.
 - **Зарплата в RUB**: порог **150 000 ₽/мес**; вилка подходит, если верхняя граница ≥ порога (полная таблица трактовок — в дизайне 19.10, сохраняется); максимум ниже порога → `rejected`.
 - **Если зарплата не указана ИЛИ валюта ≠ RUB** — берём в очередь при выполнении любого из:
   1. явный **грейд Middle+** (Middle/Mid/Senior/Lead/Principal/Staff/ведущий/тимлид/техлид); или
