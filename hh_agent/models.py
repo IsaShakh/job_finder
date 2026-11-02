@@ -67,3 +67,7 @@ class Outcome:
 
 class AttentionRequired(Exception):
     """Authentication, challenge or site change requiring a human."""
+
+
+class VacancyUnavailable(Exception):
+    """HH explicitly denies access to one vacancy for the signed-in account."""

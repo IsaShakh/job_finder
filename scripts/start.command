@@ -6,22 +6,11 @@ if [[ ! -x .venv/bin/python ]]; then
   read "reply?Нажмите Enter для закрытия: "
   exit 1
 fi
-while true; do
-  print "\nАгент hh.ru"
-  print "1 — Настройка ключей"
-  print "2 — Привязать Telegram"
-  print "3 — Войти в HH"
-  print "4 — Запустить агента"
-  print "5 — Проверить настройки"
-  print "0 — Закрыть"
-  read "choice?Выберите действие: "
-  case "$choice" in
-    1) .venv/bin/python -m hh_agent configure ;;
-    2) .venv/bin/python -m hh_agent pair ;;
-    3) .venv/bin/python -m hh_agent login ;;
-    4) .venv/bin/python -m hh_agent run ;;
-    5) .venv/bin/python -m hh_agent doctor ;;
-    0) exit 0 ;;
-    *) print "Выберите номер из меню" ;;
-  esac
-done
+print "Запуск агента hh.ru. Чтобы остановить работу, нажмите Ctrl+C."
+.venv/bin/python -m hh_agent run
+agent_status=$?
+if [[ $agent_status -ne 0 ]]; then
+  print "Для настройки ключей и входа в HH откройте scripts/setup.command."
+fi
+read "reply?Работа завершена. Нажмите Enter для закрытия: "
+exit $agent_status

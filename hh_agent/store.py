@@ -25,7 +25,8 @@ class Store:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         version = self.conn.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2):
+        if version not in (0, 1, 2, 3):
+            self.conn.close()
             raise ValueError("База создана более новой версией приложения")
         self.conn.executescript('''
         CREATE TABLE IF NOT EXISTS jobs (
@@ -37,11 +38,16 @@ class Store:
           ended TEXT, status TEXT NOT NULL, evidence TEXT);
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS inbox (update_id INTEGER PRIMARY KEY, command TEXT, created TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS outbox (id INTEGER PRIMARY KEY, text TEXT NOT NULL, sent INTEGER NOT NULL DEFAULT 0, created TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS outbox (id INTEGER PRIMARY KEY, text TEXT NOT NULL, sent INTEGER NOT NULL DEFAULT 0, created TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'event');
         CREATE TABLE IF NOT EXISTS skip_events (id INTEGER PRIMARY KEY, job_id TEXT NOT NULL, reason TEXT NOT NULL, created TEXT NOT NULL, reported INTEGER NOT NULL DEFAULT 0);
-        PRAGMA user_version=2;
         ''')
         with self.conn:
+            self.conn.execute("BEGIN IMMEDIATE")
+            if "kind" not in {row[1] for row in self.conn.execute("PRAGMA table_info(outbox)")}:
+                self.conn.execute("ALTER TABLE outbox ADD COLUMN kind TEXT NOT NULL DEFAULT 'event'")
+                prefix="Отклик подтверждён: "
+                self.conn.execute("UPDATE outbox SET kind='success' WHERE substr(text,1,?)=?",(len(prefix),prefix))
+            self.conn.execute("PRAGMA user_version=3")
             self.conn.execute("INSERT OR IGNORE INTO settings VALUES ('paused','true')")
             pilot = Vacancy("137924141", "Инженер поддержки и развития (LLM-агенты)", "Python", company="Ат Проф", remote=True)
             self.conn.execute("INSERT OR IGNORE INTO jobs(id,data,status,reason,evidence,created,updated) VALUES(?,?,'sent',?,?,?,?)", (pilot.id,dump(pilot.to_dict()),"Контрольный отклик от 21.10.2026","Подтверждены история HH и чат 5727309591",now(),now()))
@@ -124,7 +130,7 @@ class Store:
             self.conn.execute("UPDATE attempts SET status=?,evidence=?,ended=? WHERE job_id=? AND status='sending'",(status,evidence,now(),job_id))
             self._record_skip(job_id,status,reason,row)
             if notification:
-                self._enqueue(notification)
+                self._enqueue(notification,kind="success" if status=="sent" else "event")
 
     def recover(self):
         with self.conn:
@@ -146,49 +152,42 @@ class Store:
             self._set('digest_day',day)
             self._set('last_digest_at',now())
 
-    def rows(self, statuses=None, limit=50, newest=False):
+    def rows(self, statuses=None, limit=50, newest=False, offset=0):
         sql="SELECT id FROM jobs"
         args=[]
         if statuses:
             sql += " WHERE status IN ("+",".join("?" for _ in statuses)+")"
             args.extend(statuses)
-        sql += " ORDER BY updated DESC,id DESC LIMIT ?" if newest else " ORDER BY created,id LIMIT ?"
-        args.append(limit)
+        sql += " ORDER BY updated DESC,id DESC LIMIT ? OFFSET ?" if newest else " ORDER BY created,id LIMIT ? OFFSET ?"
+        args.extend((limit,offset))
         return [self.get(row[0]) for row in self.conn.execute(sql,args).fetchall()]
 
     def counts(self):
         return dict(self.conn.execute("SELECT status,COUNT(*) FROM jobs GROUP BY status").fetchall())
 
-    def _enqueue(self, text):
-        self.conn.execute("INSERT INTO outbox(text,created) VALUES(?,?)",(text,now()))
+    def _enqueue(self, text, kind="event"):
+        if kind not in ("event","reply","success"):
+            raise ValueError("Неизвестный тип уведомления")
+        self.conn.execute("INSERT INTO outbox(text,created,kind) VALUES(?,?,?)",(text,now(),kind))
 
-    def enqueue(self, text):
+    def enqueue(self, text, kind="event"):
         with self.conn:
-            self._enqueue(text)
+            self._enqueue(text,kind=kind)
 
     def pending_messages(self):
-        return [dict(row) for row in self.conn.execute("SELECT * FROM outbox WHERE sent=0 ORDER BY id LIMIT 20")]
+        return [dict(row) for row in self.conn.execute("SELECT * FROM outbox WHERE sent=0 AND kind IN ('reply','success') ORDER BY id LIMIT 20")]
 
     def delivered(self, message_id):
         with self.conn:
             self.conn.execute("UPDATE outbox SET sent=1 WHERE id=?",(message_id,))
 
     def command(self, update_id, action, response=None):
+        """Record a Telegram report request without changing worker state."""
         with self.conn:
             cursor=self.conn.execute("INSERT OR IGNORE INTO inbox VALUES(?,?,?)",(update_id,action,now()))
             if not cursor.rowcount:
                 return False
-            if action in ("pause","resume"):
-                self._set("paused",action=="pause")
-                if action=="resume":
-                    self._set("browser_blocked",False)
-            elif action in ("search","reconcile"):
-                self._set(action+"_requested",True)
-            elif action.startswith("requeue:"):
-                job_id=action.split(":",1)[1]
-                if job_id.isdigit():
-                    self.conn.execute("UPDATE jobs SET status='found',reason='',letter=NULL,updated=? WHERE id=? AND status IN ('rejected','needs_clarification','error','closed')",(now(),job_id))
             self._set("telegram_offset",update_id+1)
             if response:
-                self._enqueue(response)
+                self._enqueue(response,kind="reply")
         return True

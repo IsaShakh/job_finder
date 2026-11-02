@@ -3,7 +3,7 @@ import asyncio
 import re
 import time
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse
-from .models import AttentionRequired, Outcome, Vacancy
+from .models import AttentionRequired, Outcome, Vacancy, VacancyUnavailable
 from .rules import evaluate, parse_salary
 
 # Read rendered text, including off-screen content, but excluding text clipped by
@@ -32,6 +32,23 @@ VISIBLE_TEXT = r'''(root) => {
  }
  return out.join(' ').replace(/\s+/g,' ').trim();
 }'''
+# Read one coherent DOM snapshot. Iterating nth locators across awaits races
+# with HH replacing loading elements and leaves locators pointing past the end.
+TEST_BLOCKS = '(nodes) => { const visibleText = '+VISIBLE_TEXT+r''';
+ return nodes.filter(e=>!e.closest('footer,header,nav,aside')).map(e=>{
+  const text=visibleText(e); const parents=[];
+  if([...text].length<200&&/тест|задани/i.test(text)) {
+   let parent=e.parentElement;
+   for(let depth=0;parent&&depth<2;depth++,parent=parent.parentElement) {
+    if(['BODY','HTML','MAIN','NAV','HEADER','FOOTER','ASIDE'].includes(parent.tagName)) break;
+    const nearby=visibleText(parent);
+    if([...nearby].length>600) break;
+    parents.push(nearby);
+   }
+  }
+  return {text,parents};
+ });
+}'''
 TEST_RE = re.compile(r"(?:прой(?:ти|дите)|пройти|выполн(?:ить|ите)|начать|начните|пройти\s+онлайн).{0,90}(?:тест|задани)|(?:пройти|проходить).{0,35}тестирование",re.I)
 SENT_RE = re.compile(r"^(?:вы\s+(?:уже\s+)?отклик(?:нулись|ались)|отклик\s+(?:уже\s+)?отправлен|откликнуться\s+повторно)$",re.I)
 
@@ -59,6 +76,13 @@ class Browser:
         response=await self.page.goto(safe_hh_url(url),wait_until="domcontentloaded",timeout=45000)
         safe_hh_url(self.page.url)
         await self.check_access()
+        # HH can deny access to a specific vacancy while the account works.
+        # Only the observed denial on a vacancy page is local to that job;
+        # generic 403s, login failures and challenges still block the browser.
+        if response and response.status==403 and allow_missing and re.fullmatch(r"/vacancy/\d+",urlparse(self.page.url).path):
+            if re.search(r"\bВам недоступна эта вакансия\.",await self.text(),re.I):
+                await self.check_access(require_auth=True)
+                raise VacancyUnavailable("Вакансия недоступна текущему аккаунту HH")
         if response and response.status>=400 and not (allow_missing and response.status in (404,410)):
             raise AttentionRequired("HH вернул ошибку страницы (код %s)" % response.status)
         return response.status if response else None
@@ -89,26 +113,18 @@ class Browser:
         # Vacancy-specific banner outside the form; unrelated site skill ads
         # do not qualify. Inspect local blocks, never concatenate the whole page.
         candidates=self.page.locator('p,span,div:not(:has(*)),[role="alert"],[data-qa*="test"],a,button')
-        for node in await candidates.all():
-            if await node.evaluate("e=>!!e.closest('footer,header,nav,aside')"):
-                continue
-            text=await node.evaluate(VISIBLE_TEXT)
-            on_response=urlparse(self.page.url).path=="/applicant/vacancy_response"
+        blocks=await candidates.evaluate_all(TEST_BLOCKS)
+        on_response=urlparse(self.page.url).path=="/applicant/vacancy_response"
+        for block in blocks:
+            text=block['text']
             if len(text)<900 and TEST_RE.search(text) and (on_response or re.search(r"ваканси|отклик|работодател",text,re.I)):
                 return True
             if TEST_RE.search(text) and len(text)<200:
                 # A banner often splits context and CTA across sibling nodes.
                 # Inspect only a small nearby container, never the whole body.
-                parent=node.locator('..')
-                for _ in range(2):
-                    if await parent.evaluate("e=>['BODY','HTML','MAIN','NAV','HEADER','FOOTER','ASIDE'].includes(e.tagName)"):
-                        break
-                    nearby=await parent.evaluate(VISIBLE_TEXT)
-                    if len(nearby)>600:
-                        break
+                for nearby in block['parents']:
                     if re.search(r"ваканси|отклик|работодател",nearby,re.I):
                         return True
-                    parent=parent.locator('..')
         return False
 
     async def read(self, job_id):
@@ -126,14 +142,17 @@ class Browser:
                 return Vacancy(str(job_id),"Закрытая вакансия","",closed=True)
             raise AttentionRequired("Не удалось прочитать вакансию: структура страницы изменилась") from None
         title=await self.text('[data-qa="vacancy-title"]')
+        # HH collapses the description on archived pages. Recognize closure
+        # before requiring visible content, so this job cannot block the queue.
+        closed=bool(re.search(r"вакансия (?:в архиве|закрыта)",await self.text(),re.I))
         description=await self.text('[data-qa="vacancy-description"]')
-        if not description:
+        if not description and not closed:
             raise AttentionRequired("Описание вакансии не загрузилось")
         salary=await self.text('[data-qa="vacancy-salary"]')
         work=await self.text('[data-qa="work-formats-text"]')
         remote=bool(re.search(r"удал[её]н|remote",work,re.I)) if work else None
         skills=" ".join([await node.evaluate(VISIBLE_TEXT) for node in await self.page.locator('[data-qa="skills-element"]').all()])
-        return Vacancy(str(job_id),title,description,company=await self.text('[data-qa="vacancy-company-name"]'),salary=parse_salary(salary) if salary else None,remote=remote,test_required=await self.has_test(),already_applied=bool(await self.sent_evidence()),closed=bool(re.search(r"вакансия (?:в архиве|закрыта)",await self.text(),re.I)),requirements=skills)
+        return Vacancy(str(job_id),title,description,company=await self.text('[data-qa="vacancy-company-name"]'),salary=parse_salary(salary) if salary else None,remote=remote,test_required=await self.has_test(),already_applied=bool(await self.sent_evidence()),closed=closed,requirements=skills)
 
     async def search(self, max_pages=100):
         ids=set()
@@ -262,7 +281,7 @@ class Browser:
                 await self.check_access()
                 await asyncio.sleep(0.1)
             return Outcome("unknown",reason="HH не подтвердил отправку. Требуется проверка истории")
-        except AttentionRequired:
+        except (AttentionRequired,VacancyUnavailable):
             if attempted:
                 return Outcome("unknown",reason="После начала отправки HH запросил действие пользователя")
             raise

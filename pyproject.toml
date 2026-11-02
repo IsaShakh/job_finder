@@ -7,7 +7,7 @@ name = "hh-personal-agent"
 version = "0.1.0"
 description = "Personal hh.ru application queue with Telegram control"
 requires-python = ">=3.9"
-dependencies = ["playwright>=1.51,<2", "httpx>=0.28,<1", "python-dotenv>=1,<2"]
+dependencies = ["playwright>=1.51,<2", "httpx>=0.28,<1", "python-dotenv>=1,<2", "cryptography>=42,<46"]
 
 [project.scripts]
 hh-agent = "hh_agent.__main__:main"

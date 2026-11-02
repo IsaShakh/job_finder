@@ -4,8 +4,11 @@
 .cache/
 .superpowers/
 __pycache__/
+.pytest_cache/
 *.py[cod]
 *.egg-info/
 build/
 dist/
 .DS_Store
+*.log
+.idea/

@@ -55,7 +55,104 @@ class PersistenceTests(unittest.TestCase):
         self.db.finish("123","sent","Вы откликнулись",notification="Успешно")
         self.assertEqual(self.db.get("123")["status"],"sent")
         self.assertEqual(self.db.pending_messages()[0]["text"],"Успешно")
+        self.assertEqual(self.db.pending_messages()[0]["kind"],"success")
         self.assertFalse(self.db.discover(vacancy()))
+
+    def test_generic_events_are_retained_without_proactive_delivery(self):
+        self.db.enqueue("Нужно уточнение: Python разработчик")
+        self.db.enqueue("Отклик подтверждён: текст общего события")
+        self.assertEqual(self.db.pending_messages(),[])
+        self.assertEqual([tuple(row) for row in self.db.conn.execute(
+            "SELECT text,kind,sent FROM outbox ORDER BY id")], [
+                ("Нужно уточнение: Python разработчик","event",0),
+                ("Отклик подтверждён: текст общего события","event",0),
+            ])
+
+    def test_only_confirmed_finish_is_deliverable(self):
+        for index,status in enumerate(("needs_clarification","rejected","error","closed","unknown")):
+            job_id=str(index)
+            self.db.discover(vacancy(id=job_id))
+            self.db.finish(job_id,status,notification="Событие: "+status)
+        self.assertEqual(self.db.pending_messages(),[])
+        self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM outbox WHERE kind='event'").fetchone()[0],5)
+
+    def test_uncertain_send_notification_remains_an_event(self):
+        self.ready()
+        self.db.pause(False)
+        self.assertTrue(self.db.claim("123","resume123"))
+        self.db.finish("123","error",notification="Ошибка отправки")
+        self.assertEqual(self.db.get("123")["status"],"unknown")
+        self.assertEqual(self.db.pending_messages(),[])
+        self.assertEqual(self.db.conn.execute("SELECT kind FROM outbox").fetchone()[0],"event")
+
+    def test_command_reply_is_deliverable_once(self):
+        self.db.enqueue("Фоновое событие")
+        self.assertTrue(self.db.command(80,"status","Ответ по запросу"))
+        self.assertFalse(self.db.command(80,"status","Повтор ответа"))
+        messages=self.db.pending_messages()
+        self.assertEqual([(row["text"],row["kind"]) for row in messages],[("Ответ по запросу","reply")])
+        self.db.delivered(messages[0]["id"])
+        self.assertEqual(self.db.pending_messages(),[])
+
+    def test_explicit_notification_kinds_filter_before_delivery_limit(self):
+        for index in range(25):
+            self.db.enqueue("Фоновое событие "+str(index))
+        self.db.enqueue("Ответ",kind="reply")
+        self.db.enqueue("Успешный отклик",kind="success")
+        self.assertEqual([row["text"] for row in self.db.pending_messages()],["Ответ","Успешный отклик"])
+        with self.assertRaises(ValueError):
+            self.db.enqueue("Неизвестный тип",kind="urgent")
+
+    def test_v2_outbox_migration_preserves_state_and_only_delivers_legacy_success(self):
+        self.ready()
+        self.db.pause(False)
+        self.assertTrue(self.db.claim("123","resume123"))
+        self.db.set("telegram_chunk_42",2)
+        self.db.set("telegram_chunk_41",1)
+        self.db.command(90,"status")
+        snapshots={table:[tuple(row) for row in self.db.conn.execute("SELECT * FROM "+table)]
+                   for table in ("jobs","attempts","settings","inbox","skip_events")}
+        legacy=[
+            (41,"Нужно уточнение: Python разработчик",0,"2026-10-20T01:00:00+00:00"),
+            (42,"Отклик подтверждён: Python разработчик",0,"2026-10-20T02:00:00+00:00"),
+            (43,"Отклик подтверждён: уже доставлен",1,"2026-10-20T03:00:00+00:00"),
+            (44,"Проверка: Отклик подтверждён: ещё не успех",0,"2026-10-20T04:00:00+00:00"),
+            (45,"Отклик подтверждён:без пробела",0,"2026-10-20T05:00:00+00:00"),
+        ]
+        with self.db.conn:
+            self.db.conn.execute("DROP TABLE outbox")
+            self.db.conn.execute("CREATE TABLE outbox (id INTEGER PRIMARY KEY, text TEXT NOT NULL, sent INTEGER NOT NULL DEFAULT 0, created TEXT NOT NULL)")
+            self.db.conn.executemany("INSERT INTO outbox VALUES(?,?,?,?)",legacy)
+            self.db.conn.execute("PRAGMA user_version=2")
+        self.db.close()
+        self.db=Store(self.path)
+        self.assertEqual([row["id"] for row in self.db.pending_messages()],[42])
+        self.assertEqual(self.db.conn.execute("PRAGMA user_version").fetchone()[0],3)
+        self.assertEqual([tuple(row) for row in self.db.conn.execute("SELECT id,text,sent,created FROM outbox ORDER BY id")],legacy)
+        for table,expected in snapshots.items():
+            self.assertEqual([tuple(row) for row in self.db.conn.execute("SELECT * FROM "+table)],expected,table)
+        self.db.enqueue("Отклик подтверждён: новое общее событие")
+        self.db.delivered(42)
+        self.db.close()
+        self.db=Store(self.path)
+        self.assertEqual(self.db.pending_messages(),[])
+        self.assertEqual(self.db.setting("telegram_chunk_42"),2)
+        self.assertEqual(self.db.setting("telegram_chunk_41"),1)
+        self.assertEqual(self.db.conn.execute("SELECT MAX(id) FROM outbox").fetchone()[0],46)
+
+    def test_future_database_version_is_rejected_without_downgrade(self):
+        self.db.conn.execute("PRAGMA user_version=4")
+        with self.assertRaises(ValueError):
+            Store(self.path)
+        self.assertEqual(self.db.conn.execute("PRAGMA user_version").fetchone()[0],4)
+
+    def test_rows_pagination_respects_status_and_order(self):
+        for job_id in ("101","102","103","104","105"):
+            self.db.discover(vacancy(id=job_id))
+            self.db.decide(job_id,"needs_clarification","Нужно уточнение")
+        self.assertEqual([row["id"] for row in self.db.rows(["needs_clarification"],limit=2,offset=2)],["103","104"])
+        self.assertEqual([row["id"] for row in self.db.rows(["needs_clarification"],limit=2,newest=True,offset=2)],["103","102"])
+        self.assertEqual(self.db.rows(["needs_clarification"],offset=5),[])
 
     def test_sent_requires_platform_evidence(self):
         self.ready()
@@ -63,28 +160,45 @@ class PersistenceTests(unittest.TestCase):
             self.db.finish("123","sent","")
 
     def test_update_dedupe_survives_restart(self):
-        self.assertTrue(self.db.command(51,"pause"))
+        self.db.pause(False)
+        self.assertTrue(self.db.command(51,"pause","Telegram только показывает отчёты"))
         self.db.close()
         self.db=Store(self.path)
-        self.assertFalse(self.db.command(51,"resume"))
-        self.assertTrue(self.db.is_paused())
+        self.assertFalse(self.db.command(51,"resume","Повторный ответ"))
+        self.assertFalse(self.db.is_paused())
+        self.assertEqual(self.db.setting("telegram_offset"),52)
+        self.assertEqual([tuple(row) for row in self.db.conn.execute("SELECT update_id,command FROM inbox")],[(51,"pause")])
+        self.assertEqual([row["text"] for row in self.db.pending_messages()],["Telegram только показывает отчёты"])
 
     def test_confirmed_pilot_is_never_queued(self):
         self.assertEqual(self.db.get("137924141")["status"],"sent")
 
-    def test_requeue_is_explicit_and_cannot_repeat_sent_or_unknown(self):
-        self.ready()
-        self.db.decide("123","rejected","тест")
-        self.db.command(71,"requeue:123")
-        self.assertEqual(self.db.get("123")["status"],"found")
-        self.assertIsNone(self.db.get("123")["letter"])
-        self.db.command(72,"requeue:137924141")
-        self.assertEqual(self.db.get("137924141")["status"],"sent")
+    def test_legacy_requeue_commands_preserve_every_job_state_and_letter(self):
+        statuses=("found","rejected","needs_clarification","error","closed","ready","sending","unknown","sent")
+        for number,status in enumerate(statuses,start=200):
+            with self.subTest(status=status):
+                job_id=str(number)
+                self.db.discover(vacancy(id=job_id))
+                self.db.save_letter(job_id,Letter("Сохранённое письмо",["fastapi"],[],[]))
+                self.db.decide(job_id,status,"Сохранённая причина")
+                original=tuple(self.db.conn.execute("SELECT * FROM jobs WHERE id=?",(job_id,)).fetchone())
+                self.assertTrue(self.db.command(number,"requeue:"+job_id,"Повторная оценка через Telegram недоступна"))
+                self.assertEqual(tuple(self.db.conn.execute("SELECT * FROM jobs WHERE id=?",(job_id,)).fetchone()),original)
+                self.assertEqual(self.db.setting("telegram_offset"),number+1)
 
-    def test_resume_after_login_clears_browser_block(self):
-        self.db.set("browser_blocked",True)
-        self.db.command(73,"resume")
-        self.assertFalse(self.db.setting("browser_blocked"))
+    def test_legacy_control_commands_preserve_worker_settings(self):
+        for number,action in enumerate(("pause","resume","search","reconcile"),start=70):
+            with self.subTest(action=action):
+                self.db.pause(action!="pause")
+                self.db.set("browser_blocked",True)
+                self.db.set("attention_reason","Нужно войти в HH")
+                self.db.set("search_requested",False)
+                self.db.set("reconcile_requested",False)
+                original=[tuple(row) for row in self.db.conn.execute("SELECT * FROM settings WHERE key!='telegram_offset' ORDER BY key")]
+                self.assertTrue(self.db.command(number,action,"Управление через Telegram недоступно"))
+                self.assertEqual([tuple(row) for row in self.db.conn.execute("SELECT * FROM settings WHERE key!='telegram_offset' ORDER BY key")],original)
+                self.assertEqual(self.db.setting("telegram_offset"),number+1)
+                self.assertEqual(self.db.pending_messages()[-1]["kind"],"reply")
 
     def test_recent_history_is_not_dominated_by_old_records(self):
         self.ready()

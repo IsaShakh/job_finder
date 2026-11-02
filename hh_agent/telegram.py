@@ -1,4 +1,4 @@
-"""Owner-only Telegram control with durable updates and notification chunks.
+"""Owner-only Telegram reports with durable updates and notification chunks.
 
 Run poll_once in a task separate from the HH worker and flush loop: long polling
 waits up to 30 seconds. No synchronous sleeps occur here. flush sends at most one
@@ -14,18 +14,12 @@ import time
 
 import httpx
 
-HELP = ('Команды:\n/search — начать поиск\n/pause — пауза отправок\n'
-        '/resume — продолжить очередь в текущем режиме\n/queue — очередь\n'
-        '/history — история\n/settings — настройки\n/letter ID — письмо и подготовка\n'
-        '/reconcile — проверить незавершённые отклики\n/requeue ID — повторно оценить пропущенную вакансию\n/help — помощь\n\n'
-        '/resume не включает реальную отправку. Режим меняется при запуске приложения.')
+HELP = ('Команды отчётов:\n/status — состояние работы и последнего поиска\n'
+        '/history — история\n/letter ID — письмо и подготовка\n'
+        '/clarifications [страница] — вакансии, требующие уточнения\n/help — помощь\n\n'
+        'Работа начинается при запуске скрипта на компьютере. Остановка — закрытием процесса. '
+        'Telegram только показывает отчёты; автоматические уведомления — только об успешных откликах.')
 
-BUTTONS = {'inline_keyboard': [
-    [{'text': 'Поиск', 'callback_data': '/search'}, {'text': 'Очередь', 'callback_data': '/queue'}],
-    [{'text': 'Пауза', 'callback_data': '/pause'}, {'text': 'Продолжить', 'callback_data': '/resume'}],
-    [{'text': 'История', 'callback_data': '/history'}, {'text': 'Настройки', 'callback_data': '/settings'}],
-    [{'text': 'Проверить отклики', 'callback_data': '/reconcile'}],
-]}
 STATUS_LABELS = {'found': 'найдена', 'rejected': 'пропущена', 'needs_clarification': 'нужно уточнение',
     'ready': 'готова', 'sending': 'отправляется', 'sent': 'отправлена',
     'unknown': 'результат неизвестен', 'error': 'ошибка', 'closed': 'закрыта'}
@@ -70,36 +64,57 @@ class Telegram:
     def _response(self, text):
         parts = text.strip().split()
         command = parts[0].split('@', 1)[0].lower() if parts else ''
-        if command == '/pause':
-            return 'pause', 'Пауза включена. Уже начатая операция завершится и попадёт в историю.'
-        if command == '/resume':
-            mode = 'реальной отправки' if self.config.live else 'подготовки без отправки'
-            return 'resume', 'Пауза снята. Сохранён режим ' + mode + '.'
-        if command == '/search':
-            return 'search', 'Поиск запрошен. Результаты появятся в очереди и сводке.'
-        if command == '/reconcile':
-            return 'reconcile', 'Проверка незавершённых откликов запрошена.'
-        if command == '/requeue':
-            if len(parts) != 2 or not re.fullmatch(r'[0-9]+', parts[1]):
-                return 'requeue_denied', 'Укажите числовой ID: /requeue 123456'
-            row = self.store.get(parts[1])
-            if row is None or row['status'] not in ('rejected', 'needs_clarification', 'error', 'closed'):
-                return 'requeue_denied', ('Повторная оценка недоступна: нужна ранее пропущенная вакансия '
-                    'без начатого или подтверждённого отклика. Для неизвестного результата используйте /reconcile.')
-            return 'requeue:' + parts[1], 'Повторная оценка вакансии ' + parts[1] + ' запрошена.'
-        if command == '/settings':
-            return 'settings', ('Режим: ' + ('реальная отправка' if self.config.live else 'подготовка без отправки')
-                + '\nПауза: ' + ('да' if self.store.is_paused() else 'нет')
-                + '\nРезюме: ' + self.config.resume_id
-                + '\nПоиск каждые ' + str(self.config.search_interval) + ' сек.'
-                + '\nИнтервал отправки: ' + str(self.config.send_interval) + ' сек.'
-                + '\nМодель: ' + ('настроена' if self.config.llm_model and self.config.llm_api_key else 'не настроена'))
-        if command in ('/queue', '/history'):
-            statuses = (['found', 'ready', 'sending', 'unknown', 'needs_clarification', 'error']
-                        if command == '/queue' else ['sent', 'rejected', 'closed', 'error', 'unknown'])
-            rows = self.store.rows(statuses, limit=20, newest=(command == '/history'))
-            heading = 'Очередь (до 20 записей)' if command == '/queue' else 'История (до 20 записей)'
-            lines = [heading]
+        if command in ('/search', '/pause', '/resume', '/reconcile', '/requeue', '/settings', '/queue'):
+            return 'retired', ('Эта команда больше не управляет работой. Telegram только показывает отчёты. '
+                'Состояние: /status. Запуск и остановка — на компьютере.')
+        if command == '/status':
+            counts = self.store.counts()
+            blocked = self.store.setting('browser_blocked', False)
+            paused = self.store.is_paused()
+            lines = ['Скрипт работает; доступ к HH заблокирован.' if blocked else 'Скрипт работает.',
+                     'Режим: ' + ('реальная отправка' if self.config.live else 'подготовка без отправки'),
+                     'Пауза отправок: ' + ('да' if paused else 'нет'),
+                     'Всего: ' + ', '.join(STATUS_LABELS.get(key, key) + ' ' + str(value)
+                                           for key, value in sorted(counts.items())),
+                     'Уведомления: только успешные отклики. Ответы на команды приходят по запросу.']
+            if blocked:
+                lines.append('Нужно действие: ' + self.store.setting('attention_reason', 'Проверьте вход и доступ к HH'))
+            if paused and counts.get('unknown', 0):
+                lines.append('Отправка ждёт проверки предыдущего результата. '
+                             + ('Поиск сможет продолжиться после восстановления доступа.' if blocked
+                                else 'Поиск вакансий продолжается.'))
+            report = self.store.setting('search_report')
+            if isinstance(report, dict):
+                lines.append('Последний поиск: Вакансий: ' + str(len(report.get('ids', [])))
+                             + '. Страниц: ' + str(report.get('pages', 0)) + '.')
+                lines.append('Охват неполный.' if report.get('incomplete') else 'Доступная выдача обработана.')
+                lines.extend(str(note) for note in report.get('notes', []))
+            else:
+                lines.append('Результатов поиска пока нет.')
+            return 'status', '\n'.join(lines)
+        if command == '/clarifications':
+            if len(parts) > 2 or (len(parts) == 2 and not re.fullmatch(r'[1-9][0-9]{0,8}', parts[1])):
+                return 'clarifications', 'Укажите положительный номер страницы: /clarifications 1'
+            page = int(parts[1]) if len(parts) == 2 else 1
+            total = self.store.counts().get('needs_clarification', 0)
+            pages = max(1, (total + 19) // 20)
+            if page > pages:
+                return 'clarifications', 'Такой страницы нет. Доступно страниц: ' + str(pages) + '. /clarifications 1'
+            rows = self.store.rows(['needs_clarification'], limit=20, offset=(page - 1) * 20)
+            lines = ['Уточнения — страница ' + str(page) + ' из ' + str(pages), 'Всего: ' + str(total)]
+            for row in rows:
+                vacancy = row['vacancy']
+                lines.append(vacancy.id + ' — ' + vacancy.title[:200] + '\n'
+                             + row['reason'][:500] + '\n' + vacancy.url)
+            if not rows:
+                lines.append('Уточнений пока нет.')
+            if page < pages:
+                lines.append('Следующая страница: /clarifications ' + str(page + 1))
+            return 'clarifications', '\n\n'.join(lines)
+        if command == '/history':
+            statuses = ['sent', 'rejected', 'closed', 'error', 'unknown']
+            rows = self.store.rows(statuses, limit=20, newest=True)
+            lines = ['История (до 20 записей)']
             for row in rows:
                 vacancy = row['vacancy']
                 lines.append(vacancy.id + ' — ' + vacancy.title[:200] + '\n'
@@ -148,9 +163,12 @@ class Telegram:
             chat = _object(message.get('chat'))
             authorized = self._authorized(sender, chat)
             # An already-consumed update must not move the durable offset backwards.
-            if update['update_id'] >= self.store.setting('telegram_offset', 0):
-                raw = callback.get('data') if callback else message.get('text')
-                if authorized and isinstance(raw, str):
+            fresh = update['update_id'] >= self.store.setting('telegram_offset', 0)
+            if fresh:
+                raw = message.get('text')
+                if callback:
+                    self.store.command(update['update_id'], 'retired_callback')
+                elif authorized and isinstance(raw, str):
                     action, response = self._response(raw)
                     processed += bool(self.store.command(update['update_id'], action, response))
                 else:
@@ -163,9 +181,30 @@ class Telegram:
                     await self._api('answerCallbackQuery', {'callback_query_id': callback_id},
                                     'telegram_next_poll', timeout=10)
                 except TelegramError:
-                    # The command and offset are already durable. Do not replay either.
+                    # The update and offset are already durable. Do not replay either.
                     pass
+            if callback and authorized and fresh:
+                await self._remove_old_keyboard(message)
         return processed
+
+    async def _remove_old_keyboard(self, message):
+        # Bot API guarantees CallbackQuery.message originated from this bot.
+        # Inaccessible messages have no sender and date=0; never probe their IDs.
+        author = _object(message.get('from'))
+        message_id, date = message.get('message_id'), message.get('date')
+        if (author.get('is_bot') is not True or type(author.get('id')) is not int
+                or author['id'] <= 0 or type(message_id) is not int or not 0 < message_id <= 2147483647
+                or type(date) is not int or date <= 0
+                or time.time() < self.store.setting('telegram_next_poll', 0)
+                or time.time() < self.store.setting('telegram_next_cleanup', 0)):
+            return
+        try:
+            await self._api('editMessageReplyMarkup', {'chat_id': self.config.owner_id,
+                'message_id': message_id, 'reply_markup': {'inline_keyboard': []}},
+                'telegram_next_cleanup', timeout=10)
+        except TelegramError:
+            # Old/deleted messages may be uneditable. Their actions stay inert.
+            pass
 
     async def flush(self):
         if time.time() < self.store.setting('telegram_next_delivery', 0):
@@ -181,8 +220,6 @@ class Telegram:
                 continue
             payload = {'chat_id': self.config.owner_id, 'text': chunks[index],
                        'link_preview_options': {'is_disabled': True}}
-            if index == len(chunks) - 1:
-                payload['reply_markup'] = BUTTONS
             result = await self._api('sendMessage', payload, 'telegram_next_delivery', timeout=20)
             if result is None:
                 return 0

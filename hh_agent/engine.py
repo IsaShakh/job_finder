@@ -1,7 +1,7 @@
 import asyncio
 import time
 from datetime import datetime
-from .models import AttentionRequired, Outcome, Vacancy
+from .models import AttentionRequired, Outcome, Vacancy, VacancyUnavailable
 from .rules import evaluate
 
 
@@ -12,21 +12,41 @@ class Engine:
         self.browser=browser
         self.writer=writer
 
+    async def start(self):
+        # A local process start is the only user control. Recover an interrupted
+        # send before enabling submissions, but never infer that it was unsent.
+        self.store.recover()
+        self.store.set('search_requested',False)
+        self.store.set('reconcile_requested',False)
+        self.store.set('browser_blocked',False)
+        self.store.set('attention_reason','')
+        unknown=bool(self.store.rows(['unknown'],limit=1))
+        self.store.pause(unknown)
+        if unknown:
+            await self.reconcile()
+            if self.store.setting('browser_blocked',False):
+                return
+            self.store.pause(bool(self.store.rows(['unknown'],limit=1)))
+        await self.search()
+
     def attention(self, message):
         self.store.pause(True)
-        # Also stop searches until /search or /resume, to avoid hammering an
-        # expired login or challenge while only the send queue is paused.
+        # Stop browser work until the user fixes access and restarts locally.
         self.store.set("browser_blocked",True)
+        self.store.set("attention_reason",message)
         self.store.enqueue("Нужно действие: "+message+"\nОтправка приостановлена.")
+        print("Работа с HH остановлена: "+message+". После исправления перезапустите скрипт.")
 
     async def search(self):
         try:
+            print('Поиск вакансий начался.')
             report=await self.browser.search(max_pages=self.config.max_search_pages)
             new=0
             for job_id in report["ids"]:
                 new+=int(self.store.discover(Vacancy(job_id,"Вакансия ещё не прочитана","")))
             self.store.set("last_search",time.time())
             self.store.set("search_report",report)
+            print('Поиск завершён: найдено %s, новых %s.' % (len(report['ids']),new))
             self.store.enqueue("Поиск завершён: %s ID, новых %s. Страниц: %s.\n%s" % (len(report["ids"]),new,report["pages"],"Охват неполный. "+"; ".join(report["notes"]) if report["incomplete"] else "Все доступные страницы выбранной выдачи обработаны; сайт может менять результаты."))
         except AttentionRequired as exc:
             self.attention(str(exc))
@@ -51,6 +71,8 @@ class Engine:
                 self.store.decide(job_id,decision.status,decision.reason)
                 if decision.status=="needs_clarification":
                     self.store.enqueue("Нужно уточнение: "+vacancy.title+"\n"+vacancy.url+"\n"+decision.reason)
+        except VacancyUnavailable as exc:
+            self.store.decide(job_id,"needs_clarification",str(exc))
         except AttentionRequired as exc:
             self.attention(str(exc))
         except Exception as exc:
@@ -104,8 +126,9 @@ class Engine:
         except AttentionRequired as exc:
             self.attention(str(exc))
         except Exception as exc:
-            status="unknown" if self.store.get(job_id)["status"]=="sending" else "error"
-            outcome=Outcome(status,reason="Ошибка при отправке: "+type(exc).__name__)
+            unavailable=isinstance(exc,VacancyUnavailable)
+            status="unknown" if self.store.get(job_id)["status"]=="sending" else "needs_clarification" if unavailable else "error"
+            outcome=Outcome(status,reason=str(exc) if unavailable else "Ошибка при отправке: "+type(exc).__name__)
             self.store.finish(job_id,status,reason=outcome.reason,notification=self.notification(job_id,outcome))
             if status=="unknown":
                 self.store.pause(True)
@@ -134,19 +157,10 @@ class Engine:
         return text
 
     async def tick(self):
-        explicit_search=self.store.setting("search_requested",False)
-        explicit_reconcile=self.store.setting("reconcile_requested",False)
-        if explicit_search or explicit_reconcile:
-            self.store.set("browser_blocked",False)
         if self.store.setting("browser_blocked",False):
             return
-        if explicit_reconcile:
-            self.store.set("reconcile_requested",False)
-            await self.reconcile()
-            return
         last_search=self.store.setting("last_search",0)
-        if explicit_search or (not self.store.is_paused() and time.time()-last_search>=self.config.search_interval):
-            self.store.set("search_requested",False)
+        if time.time()-last_search>=self.config.search_interval:
             await self.search()
             return
         if self.config.live and not self.store.is_paused() and time.time()>=self.store.setting("next_send_at",0):
@@ -163,6 +177,7 @@ class Engine:
             self.store.queue_digest(self.digest(skipped),day,[row['id'] for row in skipped])
 
     async def run(self):
+        await self.start()
         while True:
             await self.tick()
             await asyncio.sleep(2)

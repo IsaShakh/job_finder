@@ -4,13 +4,14 @@ import fcntl
 import getpass
 import os
 import secrets
+import subprocess
 import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
 
 import httpx
-from dotenv import set_key
+from dotenv import dotenv_values, set_key
 from .config import Config
 from .store import Store
 
@@ -58,13 +59,14 @@ def initialize(root):
 
 def configure(root):
     initialize(root)
-    config=Config.load(root)
     print("Ключи сохраняются только в .env на этом компьютере. Ввод ключей скрыт.")
     values={}
     token=getpass.getpass("Токен Telegram-бота от @BotFather (Enter — оставить): ").strip()
     if token:
         values["TELEGRAM_BOT_TOKEN"]=token
-    base=input("Адрес API модели ["+config.llm_base_url+"]: ").strip()
+    # Existing settings can be invalid (or contain a key pasted as the URL).
+    # Do not validate or display them before the user can correct them.
+    base=input("Адрес API модели (для OpenAI: https://api.openai.com/v1; Enter — оставить): ").strip()
     if base:
         values["LLM_BASE_URL"]=base
     key=getpass.getpass("API-ключ модели (Enter — оставить): ").strip()
@@ -73,8 +75,19 @@ def configure(root):
     model=input("Название модели (Enter — оставить): ").strip()
     if model:
         values["LLM_MODEL"]=model
+    candidate={**dotenv_values(root/".env",interpolate=False),**values}
+    try:
+        Config.from_values(root,candidate)
+    except ValueError as exc:
+        raise ValueError("Изменения не сохранены. "+str(exc)) from None
+    try:
+        Config.from_values(root,{**candidate,**os.environ})
+    except ValueError as exc:
+        raise ValueError("Изменения не сохранены: проверьте переменные окружения терминала. "+str(exc)) from None
     save_env_values(root/".env",values)
-    Config.load(root)
+    overridden=[name for name in values if name in os.environ and os.environ[name]!=values[name]]
+    if overridden:
+        print("Внимание: переменные окружения имеют приоритет над сохранёнными значениями: "+", ".join(overridden))
     print("Настройки сохранены. Теперь выполните: python -m hh_agent pair")
 
 
@@ -123,32 +136,105 @@ def doctor(config):
     checks=[("Токен Telegram",bool(config.telegram_token)),("Владелец Telegram",config.owner_id>0),
             ("Ключ и модель для писем",bool(config.llm_api_key and config.llm_model)),
             ("Профиль браузера создан (вход проверяется отдельно)",config.profile_dir.exists()),
+            ("Токен API HH (вход через api-login)",config.api_token_path.exists()),
             ("Локальный Chromium",bool(list((config.root/".cache/ms-playwright").glob("chromium-*"))))]
     print("Режим: "+("отправка включена; состояние паузы хранится отдельно" if config.live else "просмотр, без отправки"))
+    print("Источник вакансий: "+("API HH (без браузера)" if config.api_token_path.exists() else "браузер (войдите через api-login для API)"))
     for label,ok in checks:
         print(("✓ " if ok else "○ ")+label)
     print("Проверка локальная: токены и вход на сайте пока не проверялись по сети.")
 
 
-async def browser_command(config, command):
-    from playwright.async_api import async_playwright
-    from .browser import Browser
+async def api_login(config):
+    from .hhapi import authorize
+    username=input("Email или телефон HH: ").strip()
+    if not username:
+        raise ValueError("Логин не введён")
+    password=getpass.getpass("Пароль (Enter — вход по коду из SMS/письма): ").strip() or None
+    def otp_code():
+        return input("Код из SMS/письма: ").strip()
+    def captcha_solve(png):
+        path=config.state_dir/"captcha.png"
+        path.parent.mkdir(parents=True,exist_ok=True)
+        path.write_bytes(png)
+        print("Капча сохранена в "+str(path))
+        try:
+            subprocess.run(["open",str(path)],check=False)
+        except FileNotFoundError:
+            pass
+        return input("Текст с картинки: ").strip()
+    me=await authorize(config,username,password,otp_code=otp_code,captcha_solve=captcha_solve)
+    print("Вход через API подтверждён: %s %s" % (me.get("first_name") or "",me.get("last_name") or ""))
+
+
+def telegram_tasks(bot):
+    from .telegram import TelegramError
+    async def polling():
+        while True:
+            try:
+                await bot.poll_once()
+                await asyncio.sleep(0.2)
+            except TelegramError:
+                # Telegram only reports results; transport failure
+                # must not control the local worker.
+                print("Telegram недоступен. Скрипт продолжает работу; связь проверится через 10 секунд.")
+                await asyncio.sleep(10)
+    async def delivery():
+        while True:
+            try:
+                await bot.flush()
+            except TelegramError:
+                await asyncio.sleep(10)
+            await asyncio.sleep(1.1)
+    return polling, delivery
+
+
+async def run_worker(config, store, source, label):
     from .engine import Engine
     from .letters import LetterGenerator
-    from .telegram import Telegram, TelegramError
+    from .telegram import Telegram
+    engine=Engine(config,store,source,LetterGenerator(config))
+    bot=Telegram(config,store)
+    polling,delivery=telegram_tasks(bot)
+    print("Скрипт запущен: поиск начнётся автоматически. Остановка здесь: Ctrl+C.")
+    print("Источник вакансий: "+label+". Режим: "+("реальные отклики" if config.live else "просмотр, без отправки")+". Telegram показывает результаты; /status — состояние.")
+    tasks=[asyncio.create_task(engine.run()),asyncio.create_task(polling()),asyncio.create_task(delivery())]
+    try:
+        await asyncio.gather(*tasks)
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks,return_exceptions=True)
+
+
+async def browser_command(config, command):
+    from .engine import Engine
+    from .letters import LetterGenerator
     if command=="run" and (not config.telegram_token or config.owner_id<=0):
         raise ValueError("Сначала настройте Telegram: configure, затем pair")
     if command=="run" and config.live and not (config.llm_api_key and config.llm_model):
         raise ValueError("Для отправки настройте API-ключ и модель; просмотр работает без них")
-    os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH",str(config.root/".cache/ms-playwright"))
-    config.profile_dir.mkdir(parents=True,exist_ok=True)
-    os.chmod(config.profile_dir,0o700)
     store=Store(config.db_path)
     store.recover()
-    if store.rows(["unknown"],limit=1):
-        store.pause(True)
-        store.set("reconcile_requested",True)
     try:
+        if command in ("run","search") and config.api_token_path.exists():
+            from .hhapi import HHClient
+            source=HHClient(config)
+            try:
+                if command=="search":
+                    engine=Engine(config,store,source,LetterGenerator(config))
+                    await engine.search()
+                    print("Поиск закончен (API HH). Найденные вакансии сохранены; отправки не выполнялись.")
+                    return
+                await run_worker(config,store,source,"API HH (без браузера)")
+            finally:
+                await source.close()
+            return
+        from playwright.async_api import async_playwright
+        from .browser import Browser
+        os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH",str(config.root/".cache/ms-playwright"))
+        config.profile_dir.mkdir(parents=True,exist_ok=True)
+        os.chmod(config.profile_dir,0o700)
         async with async_playwright() as pw:
             context=await pw.chromium.launch_persistent_context(str(config.profile_dir),headless=False if command=="login" else config.headless,locale="ru-RU",viewport={"width":1280,"height":900})
             try:
@@ -166,36 +252,9 @@ async def browser_command(config, command):
                 engine=Engine(config,store,browser,LetterGenerator(config))
                 if command=="search":
                     await engine.search()
-                    print("Поиск закончен. Найденные вакансии сохранены; отправки не выполнялись.")
+                    print("Поиск закончен (браузер). Найденные вакансии сохранены; отправки не выполнялись.")
                     return
-                bot=Telegram(config,store)
-                store.enqueue("Агент запущен. "+("Отправка разрешена; /resume продолжит очередь." if config.live else "Режим просмотра: отправка выключена.")+"\n/search — поиск, /pause — пауза, /queue — очередь.")
-                async def polling():
-                    while True:
-                        try:
-                            await bot.poll_once()
-                            await asyncio.sleep(0.2)
-                        except TelegramError:
-                            # Unknown control-plane state must stop future sends.
-                            store.pause(True)
-                            print("Telegram недоступен: отправка на паузе. Проверка повторится через 10 секунд.")
-                            await asyncio.sleep(10)
-                async def delivery():
-                    while True:
-                        try:
-                            await bot.flush()
-                        except TelegramError:
-                            store.pause(True)
-                            await asyncio.sleep(10)
-                        await asyncio.sleep(1.1)
-                print("Агент работает. Управление — в Telegram. Ctrl+C останавливает приложение.")
-                tasks=[asyncio.create_task(engine.run()),asyncio.create_task(polling()),asyncio.create_task(delivery())]
-                try:
-                    await asyncio.gather(*tasks)
-                finally:
-                    for task in tasks:
-                        task.cancel()
-                    await asyncio.gather(*tasks,return_exceptions=True)
+                await run_worker(config,store,browser,"браузер")
             finally:
                 await context.close()
     finally:
@@ -203,9 +262,9 @@ async def browser_command(config, command):
 
 
 def main(argv=None):
-    parser=argparse.ArgumentParser(description="Личный агент hh.ru с управлением из Telegram")
+    parser=argparse.ArgumentParser(description="Личный агент hh.ru с отчётами в Telegram")
     parser.add_argument("--root",type=Path,default=Path.cwd(),help="Папка проекта и его локальных настроек")
-    parser.add_argument("command",choices=["init","configure","pair","doctor","login","search","run","status"])
+    parser.add_argument("command",choices=["init","configure","pair","doctor","login","api-login","search","run","status"])
     args=parser.parse_args(argv)
     root=args.root.resolve()
     try:
@@ -228,6 +287,8 @@ def main(argv=None):
         with process_lock(config.state_dir):
             if args.command=="pair":
                 asyncio.run(pair(config))
+            elif args.command=="api-login":
+                asyncio.run(api_login(config))
             else:
                 asyncio.run(browser_command(config,args.command))
         return 0

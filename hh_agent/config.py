@@ -16,6 +16,7 @@ class Config:
     state_dir: Path
     db_path: Path
     profile_dir: Path
+    api_token_path: Path
     telegram_token: str = field(default='', repr=False)
     owner_id: int = 0
     llm_base_url: str = 'https://api.openai.com/v1'
@@ -32,7 +33,11 @@ class Config:
     def load(cls, root: Path):
         root = Path(root).expanduser().resolve()
         env = {**dotenv_values(root / '.env', interpolate=False), **os.environ}
+        return cls.from_values(root, env)
 
+    @classmethod
+    def from_values(cls, root: Path, env):
+        root = Path(root).expanduser().resolve()
         def value(name, default=''):
             return str(env.get(name) or default).strip()
 
@@ -68,7 +73,8 @@ class Config:
             raise ValueError('LLM_BASE_URL: нужен HTTPS URL без пароля и параметров')
         state = root / '.state'
         return cls(root=root, state_dir=state, db_path=state / 'agent.sqlite3',
-                   profile_dir=state / 'browser-profile', telegram_token=token,
+                   profile_dir=state / 'browser-profile', api_token_path=state / 'api-token.json',
+                   telegram_token=token,
                    owner_id=owner, llm_base_url=base, llm_api_key=value('LLM_API_KEY'),
                    llm_model=value('LLM_MODEL'), resume_id=resume_id,
                    live=boolean('HH_LIVE'), headless=boolean('HH_HEADLESS'),
