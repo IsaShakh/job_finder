@@ -1,8 +1,8 @@
 import tempfile
 import unittest
 from pathlib import Path
-from hh_agent.models import Letter
-from hh_agent.store import Store
+from job_finder.models import Letter
+from job_finder.store import Store
 from tests.test_rules import vacancy
 
 

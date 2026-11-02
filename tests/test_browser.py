@@ -2,8 +2,8 @@ import os
 import unittest
 from pathlib import Path
 from playwright.async_api import async_playwright
-from hh_agent.browser import Browser
-from hh_agent.models import AttentionRequired, Letter, VacancyUnavailable
+from job_finder.browser import Browser
+from job_finder.models import AttentionRequired, Letter, VacancyUnavailable
 
 os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH",str(Path(__file__).resolve().parents[1]/".cache/ms-playwright"))
 RESUME="b424f687ff113123eb0039ed1f7a496e413267"

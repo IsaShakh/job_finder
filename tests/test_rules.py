@@ -1,6 +1,6 @@
 import unittest
-from hh_agent.models import Vacancy, Salary
-from hh_agent.rules import evaluate, parse_salary
+from job_finder.models import Vacancy, Salary
+from job_finder.rules import evaluate, parse_salary
 
 
 def vacancy(**changes):

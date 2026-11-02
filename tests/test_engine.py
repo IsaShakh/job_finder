@@ -5,9 +5,9 @@ from dataclasses import replace
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from hh_agent.engine import Engine
-from hh_agent.models import AttentionRequired, Letter, Outcome, Salary, VacancyUnavailable
-from hh_agent.store import Store
+from job_finder.engine import Engine
+from job_finder.models import AttentionRequired, Letter, Outcome, Salary, VacancyUnavailable
+from job_finder.store import Store
 from tests.test_rules import vacancy
 
 

@@ -14,10 +14,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from dotenv import dotenv_values
-from hh_agent.__main__ import browser_command, main, process_lock, save_env_values
-from hh_agent.config import Config
-from hh_agent.store import Store
-from hh_agent.telegram import TelegramError
+from job_finder.__main__ import browser_command, main, process_lock, save_env_values
+from job_finder.config import Config
+from job_finder.store import Store
+from job_finder.telegram import TelegramError
 from tests.test_engine import Site, Writer
 
 
@@ -38,7 +38,7 @@ class CliTests(unittest.TestCase):
                 text=True,timeout=3,env={**os.environ,'HH_TEST_ARGS_PATH':str(record)})
             self.assertEqual(result.returncode,0,result.stderr)
             self.assertTrue(record.exists(),'Launcher did not start the worker')
-            self.assertEqual(record.read_text().splitlines(),['-m','hh_agent','run'])
+            self.assertEqual(record.read_text().splitlines(),['-m','job_finder','run'])
 
     def run_configure(self, root, answers, secrets=('', ''), env=None):
         prompts=[]
@@ -124,12 +124,12 @@ class CliTests(unittest.TestCase):
     def test_init_is_private_and_does_not_overwrite_settings(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)
-            result=subprocess.run([sys.executable,"-m","hh_agent","--root",temp,"init"],capture_output=True,text=True)
+            result=subprocess.run([sys.executable,"-m","job_finder","--root",temp,"init"],capture_output=True,text=True)
             self.assertEqual(result.returncode,0,result.stderr)
             path=root/".env"
             self.assertEqual(path.stat().st_mode&0o777,0o600)
             path.write_text("CUSTOM=keep\n")
-            subprocess.run([sys.executable,"-m","hh_agent","--root",temp,"init"],check=True,capture_output=True)
+            subprocess.run([sys.executable,"-m","job_finder","--root",temp,"init"],check=True,capture_output=True)
             self.assertEqual(path.read_text(),"CUSTOM=keep\n")
 
     def test_local_process_lock_prevents_second_worker(self):
@@ -165,9 +165,9 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
                     raise TelegramError('Unavailable')
                 async def flush(self):
                     raise TelegramError('Unavailable')
-            with patch('hh_agent.hhapi.HHClient',return_value=ApiSite()), \
-                    patch('hh_agent.letters.LetterGenerator',return_value=Writer()), \
-                    patch('hh_agent.telegram.Telegram',return_value=OfflineBot()), \
+            with patch('job_finder.hh.HHClient',return_value=ApiSite()), \
+                    patch('job_finder.letters.LetterGenerator',return_value=Writer()), \
+                    patch('job_finder.telegram.Telegram',return_value=OfflineBot()), \
                     patch('playwright.async_api.async_playwright',AsyncMock()) as playwright_mock, \
                     patch.dict(os.environ, {}, clear=True):
                 task=asyncio.create_task(browser_command(config,'run'))
@@ -215,9 +215,9 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             async def playwright():
                 yield pw
             with patch('playwright.async_api.async_playwright',playwright), \
-                    patch('hh_agent.browser.Browser',return_value=WaitingSite()), \
-                    patch('hh_agent.letters.LetterGenerator',return_value=WatchingWriter()), \
-                    patch('hh_agent.telegram.Telegram',return_value=OfflineBot()), \
+                    patch('job_finder.browser.Browser',return_value=WaitingSite()), \
+                    patch('job_finder.letters.LetterGenerator',return_value=WatchingWriter()), \
+                    patch('job_finder.telegram.Telegram',return_value=OfflineBot()), \
                     patch.dict(os.environ, {}, clear=True):
                 task=asyncio.create_task(browser_command(config,'run'))
                 try:

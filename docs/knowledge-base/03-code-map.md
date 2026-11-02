@@ -2,7 +2,7 @@
 
 Все пути относительно корня проекта. Порядок — от «словаря» к оркестратору.
 
-## hh_agent/models.py (73 строки)
+## job_finder/models.py (73 строки)
 
 Типы данных и исключения.
 
@@ -14,7 +14,7 @@
 - `AttentionRequired(Exception)` — капча, выход из аккаунта, смена структуры сайта: нужно действие человека.
 - `VacancyUnavailable(Exception)` — HH явно отказывает в доступе к одной вакансии (не блокирует остальную работу).
 
-## hh_agent/config.py (81 строка)
+## job_finder/config.py (81 строка)
 
 - Константа `RESUME_ID = 'b424f687ff113123eb0039ed1f7a496e413267'`.
 - `Config` (frozen dataclass): пути (`root`, `.state/`, `agent.sqlite3`, `browser-profile`, `api-token.json`) и настройки. `telegram_token` и `llm_api_key` — `repr=False` (не светятся в repr/логах).
@@ -22,14 +22,14 @@
 - Строгая валидация: формат токена Telegram (`^\d+:[A-Za-z0-9_-]+$`), положительные целые для интервалов, `LLM_BASE_URL` — HTTPS без пользователя/пароля/параметров, `HH_RESUME_ID` обязан совпадать с согласованным. Ошибки валидации не печатают сами секреты.
 - Значения по умолчанию: `LLM_BASE_URL=https://api.openai.com/v1`, `live=false`, `headless=false`, `search_interval=21600` (6 ч), `send_interval=90` с, `max_search_pages=100`.
 
-## hh_agent/rules.py (64 строки)
+## job_finder/rules.py (64 строки)
 
 Чистые функции, без I/O (легко тестируются).
 
 - `parse_salary(raw)` — разбор строки зарплаты: числа, валюта (₽/$/€/₸ → RUB/USD/EUR/KZT), период (месяц/час/год/день), «от/до» для одного числа. Неоднозначный текст → `minimum=None, maximum=None` (без угадывания).
 - `evaluate(vacancy) → Decision` — все правила отбора (детально в [05-business-rules.md](05-business-rules.md)): закрыта → `closed`; тест → `rejected`; Python; удалёнка; командировки; география; грейд; зарплата (порог 150 000 ₽).
 
-## hh_agent/store.py (193 строки)
+## job_finder/store.py (193 строки)
 
 SQLite-слой. Схема и статусы — в [04-data-model.md](04-data-model.md). Ключевые методы:
 
@@ -47,9 +47,9 @@ SQLite-слой. Схема и статусы — в [04-data-model.md](04-data-
 - `command(update_id, action, response)` — дедупликация Telegram-обновлений через `inbox`, продвижение `telegram_offset`.
 - `enqueue/pending_messages/delivered` — outbox уведомлений.
 
-## hh_agent/hhapi.py (~600 строк)
+## job_finder/hh.py (~600 строк)
 
-**Программный источник вакансий (основной)** — API hh.ru в стиле официального Android-приложения. Протокол: [ресёрч](../research/2026-10-30-hh-programmatic-api.md).
+**Программный источник вакансий (основной)** — API hh.ru в стиле официального Android-приложения. Протокол: [ресёрч](../research/2026-10-30-programmatic-api.md).
 
 - Константы: ключи Android-приложения (`ANDROID_CLIENT_ID/SECRET` — публичные константы приложения, не наши секреты), User-Agent'ы, лимиты (пауза ≥0.4 с, 100 вакансий/страница, 2000 результатов, задержка 1–3 с перед откликом).
 - `TokenStore` — `.state/api-token.json` (0600, атомарная запись, clear).
@@ -63,7 +63,7 @@ SQLite-слой. Схема и статусы — в [04-data-model.md](04-data-
 - Авторизация `authorize(config, username, password, otp_code, captcha_solve, …)`: GET `/oauth/authorize` (роль applicant, force_login) → страница входа → `parse_initial_state` (шаблон `HH-Lux-InitialState`: `xsrfToken`, `loginTrustFlagsSecret`) → вход паролем (`POST` на страницу входа) или кодом (`POST /account/otp_generate` → `POST /account/login/by_code`); `trust_flags()` — RSA-OAEP-SHA256 `{"…","ts":ms}` публичным ключом страницы; капча — `POST /captcha?lang=RU` → картинка → повтор с `captchaState/captchaKey/captchaText`; затем `GET backurl` → 302 `hhandroid://oauthresponse?code=…` → `POST /oauth/token` → токены в TokenStore.
 - Все ошибки санитизированы (`HHAPIError`, `AttentionRequired`): токены и тела ответов в исключения не попадают.
 
-## hh_agent/browser.py (318 строк)
+## job_finder/browser.py (318 строк)
 
 **Запасной браузерный адаптер hh.ru** (используется, когда нет токена API, и для команды `login`). Только публичные страницы; адреса проверяются `safe_hh_url` (только `https://*.hh.ru`, без credentials).
 
@@ -79,7 +79,7 @@ SQLite-слой. Схема и статусы — в [04-data-model.md](04-data-
 - `select_resume()` — выбор резюме по ID radio-поля, с повторной проверкой после изменения; никогда по названию.
 - `reconcile(job_id) → Outcome` — проверка подтверждения отклика для `unknown`; отсутствие надписи не доказывает неудачу.
 
-## hh_agent/letters.py (165 строк)
+## job_finder/letters.py (165 строк)
 
 - `PRACTICE_TECHNOLOGIES` — закрытый список из 18 технологий, по которым допускаются «ограниченные утверждения» о практическом знакомстве.
 - `LetterGenerator` грузит `profile.json` в неизменяемый `MappingProxyType` (факты нельзя изменить на лету).
@@ -90,7 +90,7 @@ SQLite-слой. Схема и статусы — в [04-data-model.md](04-data-
 - `generate(vacancy)` — запрос к Chat Completions (`response_format: json_object`): системный промпт со схемой и правилами безопасности, пользовательское сообщение — только данные вакансии (обрезка полей). Ответ жёстко валидируется `_validate`: точный набор ключей, 1–6 уникальных фактов с `python_backend` первым, ≤2 утверждения строго из `allowed_claims`, `preparation` в том же порядке, текст обязан **дословно** совпадать с локальной сборкой `_render`. Любое отклонение → `LetterError` (санитизированная, без секретов).
 - Нет ключа/модели → fallback; ошибка HTTP/JSON → понятная ошибка без утечки URL и тела ответа.
 
-## hh_agent/telegram.py (262 строки)
+## job_finder/telegram.py (262 строки)
 
 - `HELP`, `STATUS_LABELS` — тексты команд и русские названия статусов.
 - `_chunks(text)` — разбивка ≤4000 UTF-16 юнитов без разрыва суррогатных пар.
@@ -100,7 +100,7 @@ SQLite-слой. Схема и статусы — в [04-data-model.md](04-data-
 - `flush()` — доставка до одного чанка из outbox за вызов; прогресс чанков персистится; 429 → уважение `retry_after`; пауза ≥1.05 с между сообщениями.
 - `_api(method, payload, retry_key, timeout)` — единый клиент; все ошибки санитизируются в `TelegramError` (без токена/URL/тел ответов).
 
-## hh_agent/engine.py (183 строки)
+## job_finder/engine.py (183 строки)
 
 Оркестратор — см. [02-architecture.md](02-architecture.md). Дополнительно:
 
@@ -110,7 +110,7 @@ SQLite-слой. Схема и статусы — в [04-data-model.md](04-data-
 - `tick()` — приоритеты: блокировка → периодический поиск → отправка → подготовка → дневная сводка.
 - `run()` — `start()` + цикл `tick()` каждые 2 с.
 
-## hh_agent/__main__.py (~310 строк)
+## job_finder/__main__.py (~310 строк)
 
 - `process_lock(state_dir)` — fcntl-блокировка одного экземпляра.
 - `initialize` — создание `.env` (0600) из `.env.example` и `.state/` (0700).
@@ -122,7 +122,7 @@ SQLite-слой. Схема и статусы — в [04-data-model.md](04-data-
 - `browser_command` — выбирает источник: есть `.state/api-token.json` → `HHClient` (API, без браузера); нет → Playwright+`Browser` (запасной путь, включая `login` с ручным входом).
 - `main` — разбор команд; перехват `ValueError/RuntimeError` (понятное сообщение) и любых прочих исключений (только имя типа — в тексте исключений могут быть учётные данные или текст страниц); `KeyboardInterrupt` → «незавершённая отправка будет проверена при следующем запуске».
 
-## hh_agent/profile.json (25 строк)
+## job_finder/profile.json (25 строк)
 
 Единственный источник фактов профиля: `version`, `sources` (ссылки на спеки), 16 фактов `{id, ru, en, tags}`. Примеры: `python_backend`, `fastapi`, `django_drf`, `postgresql`, `fitstars_ai`, `api_integration`, `nginx` и др.
 
@@ -130,6 +130,6 @@ SQLite-слой. Схема и статусы — в [04-data-model.md](04-data-
 
 - `tests/` — 156 тестов, карта покрытия в [09-testing.md](09-testing.md).
 - `scripts/setup.command`, `scripts/start.command` — zsh-обёртки меню/запуска (меню включает вход через API и запасной вход через браузер).
-- `pyproject.toml` — пакет `hh-personal-agent`, entry point `hh-agent`, зависимости: playwright, httpx, python-dotenv, cryptography; package-data: `profile.json`.
+- `pyproject.toml` — пакет `job-finder`, entry point `job-finder`, зависимости: playwright, httpx, python-dotenv, cryptography; package-data: `profile.json`.
 - `requirements.lock` — замороженные версии (playwright 1.60.0, httpx 0.28.1, cryptography 45.0.7 и пр.).
 - `.env.example` — образец настроек (полный список переменных в [11-glossary.md](11-glossary.md)).

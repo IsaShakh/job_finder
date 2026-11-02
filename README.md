@@ -1,4 +1,4 @@
-# Личный агент для hh.ru
+# Личный агент поиска вакансий
 
 Приложение ищет Python-вакансии, проверяет условия, готовит письма и ведёт очередь откликов. Запуск и остановка — на компьютере; Telegram показывает результаты без кнопок управления. При выключении или сне компьютера обработка останавливается.
 
@@ -60,13 +60,13 @@
 
 ```sh
 cd /Users/vll/VLL/projects/job_finder_v2
-.venv/bin/python -m hh_agent init
-.venv/bin/python -m hh_agent configure
-.venv/bin/python -m hh_agent pair
-.venv/bin/python -m hh_agent api-login
-.venv/bin/python -m hh_agent login
-.venv/bin/python -m hh_agent doctor
-.venv/bin/python -m hh_agent run
+.venv/bin/python -m job_finder init
+.venv/bin/python -m job_finder configure
+.venv/bin/python -m job_finder pair
+.venv/bin/python -m job_finder api-login
+.venv/bin/python -m job_finder login
+.venv/bin/python -m job_finder doctor
+.venv/bin/python -m job_finder run
 ```
 
 Установка в новую папку на macOS/Linux с Python 3.9 или новее:
@@ -82,4 +82,4 @@ PLAYWRIGHT_BROWSERS_PATH=.cache/ms-playwright .venv/bin/python -m playwright ins
 
 Секреты находятся в `.env`, сессия и база — в `.state/`; обе папки исключены из Git. Не публикуйте их и не удаляйте базу ради повторной отправки. Обновляя приложение, сохраняйте `.state/agent.sqlite3` вместе с файлами `-wal`/`-shm` либо делайте копию после остановки процесса.
 
-История решений: [исходный проект](docs/superpowers/specs/2026-10-19-hh-agent-design.md). Актуальные запуск и интерфейс Telegram описаны выше. Формат Telegram проверен по [официальному Bot API](https://core.telegram.org/bots/api); сохраняемый профиль браузера — по [документации Playwright](https://playwright.dev/python/docs/api/class-browsertype#browser-type-launch-persistent-context); запрос модели — по [официальному Chat Completions API](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create).
+История решений: [исходный проект](docs/superpowers/specs/2026-10-19-job-agent-design.md). Актуальные запуск и интерфейс Telegram описаны выше. Формат Telegram проверен по [официальному Bot API](https://core.telegram.org/bots/api); сохраняемый профиль браузера — по [документации Playwright](https://playwright.dev/python/docs/api/class-browsertype#browser-type-launch-persistent-context); запрос модели — по [официальному Chat Completions API](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create).

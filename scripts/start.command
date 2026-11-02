@@ -6,8 +6,8 @@ if [[ ! -x .venv/bin/python ]]; then
   read "reply?Нажмите Enter для закрытия: "
   exit 1
 fi
-print "Запуск агента hh.ru. Чтобы остановить работу, нажмите Ctrl+C."
-.venv/bin/python -m hh_agent run
+print "Запуск агента поиска вакансий. Чтобы остановить работу, нажмите Ctrl+C."
+.venv/bin/python -m job_finder run
 agent_status=$?
 if [[ $agent_status -ne 0 ]]; then
   print "Для настройки ключей и входа в HH откройте scripts/setup.command."

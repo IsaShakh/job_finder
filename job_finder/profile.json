@@ -1,8 +1,8 @@
 {
   "version": 1,
   "sources": [
-    "docs/superpowers/specs/2026-10-19-hh-agent-design.md",
-    "docs/research/2026-10-21-hh-first-application.md"
+    "docs/superpowers/specs/2026-10-19-job-finder-design.md",
+    "docs/research/2026-10-21-first-application.md"
   ],
   "facts": [
     {"id": "python_backend", "ru": "Я Python backend-разработчик.", "en": "I am a Python backend developer.", "tags": ["python", "backend"]},

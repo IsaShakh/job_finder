@@ -9,10 +9,10 @@ from unittest.mock import patch
 
 import httpx
 
-from hh_agent.config import Config
-from hh_agent.models import Letter, Vacancy
-from hh_agent.store import Store
-from hh_agent.telegram import Telegram, TelegramError
+from job_finder.config import Config
+from job_finder.models import Letter, Vacancy
+from job_finder.store import Store
+from job_finder.telegram import Telegram, TelegramError
 
 
 def message(update_id, text, sender=123, chat=123, kind='private'):
@@ -320,21 +320,21 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
         self.store.enqueue(text, kind='reply')
         self.send_results = [httpx.Response(200, json={'ok': True, 'result': {'message_id': 1}}),
                              httpx.Response(503, json={'ok': False, 'description': 'secret-url'})]
-        with patch('hh_agent.telegram.time.time', return_value=1000):
+        with patch('job_finder.telegram.time.time', return_value=1000):
             await self.telegram.flush()
             await self.telegram.flush()
         sends = [data for method, data in self.requests if method == 'sendMessage']
         self.assertEqual(len(sends), 1)
         self.assertLess(len(sends[0]['text'].encode('utf-16-le')) // 2, 4096)
-        with patch('hh_agent.telegram.time.time', return_value=1002):
+        with patch('job_finder.telegram.time.time', return_value=1002):
             with self.assertRaises(TelegramError):
                 await self.telegram.flush()
         self.store.close()
         self.store = Store(self.config.db_path)
         self.telegram = Telegram(self.config, self.store, http_client=self.client)
-        with patch('hh_agent.telegram.time.time', return_value=2000):
+        with patch('job_finder.telegram.time.time', return_value=2000):
             await self.telegram.flush()
-        with patch('hh_agent.telegram.time.time', return_value=2002):
+        with patch('job_finder.telegram.time.time', return_value=2002):
             await self.telegram.flush()
         sends = [data for method, data in self.requests if method == 'sendMessage']
         self.assertEqual(sends[1]['text'], sends[2]['text'])
@@ -346,10 +346,10 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
     async def test_poll_429_persists_bounded_retry_and_never_throws_secret_description(self):
         self.poll_result = httpx.Response(429, json={'ok': False, 'error_code': 429,
             'description': 'private-token', 'parameters': {'retry_after': 999999}})
-        with patch('hh_agent.telegram.time.time', return_value=1000):
+        with patch('job_finder.telegram.time.time', return_value=1000):
             await self.telegram.poll_once()
         self.assertEqual(self.store.setting('telegram_next_poll'), 4600)
-        with patch('hh_agent.telegram.time.time', return_value=1001):
+        with patch('job_finder.telegram.time.time', return_value=1001):
             await self.telegram.poll_once()
         self.assertEqual(len(self.requests), 1)
 
@@ -357,13 +357,13 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
         self.store.enqueue('Unsent letter', kind='reply')
         self.send_results = [httpx.Response(200, json={'ok': False, 'error_code': 429,
             'parameters': {'retry_after': 10}})]
-        with patch('hh_agent.telegram.time.time', return_value=1000):
+        with patch('job_finder.telegram.time.time', return_value=1000):
             await self.telegram.flush()
-        with patch('hh_agent.telegram.time.time', return_value=1009):
+        with patch('job_finder.telegram.time.time', return_value=1009):
             await self.telegram.flush()
         self.assertEqual(len(self.requests), 1)
         self.assertEqual(len(self.store.pending_messages()), 1)
-        with patch('hh_agent.telegram.time.time', return_value=1010):
+        with patch('job_finder.telegram.time.time', return_value=1010):
             await self.telegram.flush()
         self.assertEqual(self.store.pending_messages(), [])
 
@@ -382,7 +382,7 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_null_success_result_is_backed_off_as_protocol_failure(self):
         self.poll_result = httpx.Response(200, json={'ok': True, 'result': None})
-        with patch('hh_agent.telegram.time.time', return_value=1000):
+        with patch('job_finder.telegram.time.time', return_value=1000):
             with self.assertRaises(TelegramError):
                 await self.telegram.poll_once()
             await self.telegram.poll_once()
@@ -400,7 +400,7 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
             return httpx.Response(429, json={'ok': False, 'error_code': 429,
                                             'parameters': {'retry_after': 60}})
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-            with patch('hh_agent.telegram.time.time', return_value=1000):
+            with patch('job_finder.telegram.time.time', return_value=1000):
                 await Telegram(self.config, self.store, http_client=client).poll_once()
         self.assertEqual(calls, ['getUpdates', 'answerCallbackQuery'])
         self.assertIsNone(self.store.setting('search_requested'))

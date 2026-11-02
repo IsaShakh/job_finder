@@ -10,10 +10,10 @@ import httpx
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
-from hh_agent.config import Config
-from hh_agent.hhapi import (HHAPIError, HHClient, TokenStore, authorize,
+from job_finder.config import Config
+from job_finder.hh import (HHAPIError, HHClient, TokenStore, authorize,
                             trust_flags, vacancy_from_json)
-from hh_agent.models import AttentionRequired, Letter, Vacancy
+from job_finder.models import AttentionRequired, Letter, Vacancy
 
 VACANCY_JSON = {
     "id": "123", "name": "Python Developer",

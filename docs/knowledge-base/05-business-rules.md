@@ -1,6 +1,6 @@
 # 05. Бизнес-правила отбора вакансий
 
-Источник правил — [одобренный дизайн](../superpowers/specs/2026-10-19-hh-agent-design.md); реализация — [`hh_agent/rules.py`](../../hh_agent/rules.py) (функция `evaluate`) и проверки тестов в [`hh_agent/browser.py`](../../hh_agent/browser.py) (`has_test`).
+Источник правил — [одобренный дизайн](../superpowers/specs/2026-10-19-job-agent-design.md); реализация — [`job_finder/rules.py`](../../job_finder/rules.py) (функция `evaluate`) и проверки тестов в [`job_finder/browser.py`](../../job_finder/browser.py) (`has_test`).
 
 ## Порядок проверки `evaluate(vacancy)`
 
@@ -52,7 +52,7 @@
 ## Сопроводительные письма — правила
 
 - Язык письма — язык вакансии (≥8 кириллических букв → русский, иначе английский); язык письма не является подтверждением знания языка.
-- Письмо собирается только из: (1) фраз-фактов [profile.json](../../hh_agent/profile.json) (1–6 штук, `python_backend` первой), (2) до 2 «ограниченных утверждений» о практическом знакомстве с технологией из закрытого списка `PRACTICE_TECHNOLOGIES` (Kubernetes, Kafka, RabbitMQ, Airflow, ClickHouse, Terraform, Ansible, Pytest, Pandas, NumPy, MLflow, gRPC, Elasticsearch, Prometheus, Grafana, Selenium, SQLAlchemy, Pydantic), только если технология упомянута в вакансии.
+- Письмо собирается только из: (1) фраз-фактов [profile.json](../../job_finder/profile.json) (1–6 штук, `python_backend` первой), (2) до 2 «ограниченных утверждений» о практическом знакомстве с технологией из закрытого списка `PRACTICE_TECHNOLOGIES` (Kubernetes, Kafka, RabbitMQ, Airflow, ClickHouse, Terraform, Ansible, Pytest, Pandas, NumPy, MLflow, gRPC, Elasticsearch, Prometheus, Grafana, Selenium, SQLAlchemy, Pydantic), только если технология упомянута в вакансии.
 - Каждое добавленное утверждение обязано сопровождаться точной записью плана подготовки; утверждения и подготовка видны только владельцу в Telegram и не отправляются работодателю.
 - Выдумывать должности, даты, образование, сертификаты, размер команды, достижения — запрещено; модель получает только факты профиля и данные вакансии (ненадёжный текст), ответ дословно сверяется с локальной сборкой.
 - Без ключа модели письмо собирается детерминированно (`python_backend` + до 5 фактов по тегам), без добавленных утверждений.

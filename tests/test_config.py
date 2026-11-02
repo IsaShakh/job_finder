@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from hh_agent.config import Config
+from job_finder.config import Config
 
 
 class ConfigTests(unittest.TestCase):

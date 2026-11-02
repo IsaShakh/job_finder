@@ -19,15 +19,15 @@
 
 ```
 cd /Users/vll/VLL/projects/job_finder_v2
-.venv/bin/python -m hh_agent init
-.venv/bin/python -m hh_agent configure
-.venv/bin/python -m hh_agent pair
-.venv/bin/python -m hh_agent api-login   # вход в HH через API (основной)
-.venv/bin/python -m hh_agent login       # запасной вход в браузере
-.venv/bin/python -m hh_agent doctor
-.venv/bin/python -m hh_agent run
-.venv/bin/python -m hh_agent status     # пауза и счётчики без запуска браузера
-.venv/bin/python -m hh_agent search     # один поиск, без отправки
+.venv/bin/python -m job_finder init
+.venv/bin/python -m job_finder configure
+.venv/bin/python -m job_finder pair
+.venv/bin/python -m job_finder api-login   # вход в HH через API (основной)
+.venv/bin/python -m job_finder login       # запасной вход в браузере
+.venv/bin/python -m job_finder doctor
+.venv/bin/python -m job_finder run
+.venv/bin/python -m job_finder status     # пауза и счётчики без запуска браузера
+.venv/bin/python -m job_finder search     # один поиск, без отправки
 ```
 
 ## Параметры `.env` (см. [.env.example](../../.env.example))
@@ -61,7 +61,7 @@ cd /Users/vll/VLL/projects/job_finder_v2
 | --- | --- |
 | Краш после отправки отклика | строка → `unknown`; при следующем запуске сверка: API — по списку откликов, браузер — по надписи на странице; без подтверждения — проверка истории HH вручную; автоповтор запрещён |
 | Капча API | `AttentionRequired` → пауза + `browser_blocked`; открыть hh.ru вручную или подождать, перезапустить; при капче на входе — `api-login` с вводом капчи в терминале |
-| Токен API истёк / не продлился | ошибка «выполните api-login» → `python -m hh_agent api-login` |
+| Токен API истёк / не продлился | ошибка «выполните api-login» → `python -m job_finder api-login` |
 | Изменилась структура страницы входа HH | `api-login` сообщает об изменении структуры; запасной путь — `login` через браузер |
 | Вакансия недоступна конкретному аккаунту (403 «Вам недоступна эта вакансия») | `needs_clarification` только для этой вакансии; очередь продолжает работу |
 | Вакансия закрыта/в архиве/404/410 | `closed`, очередь не блокируется |

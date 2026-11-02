@@ -29,18 +29,18 @@
 
 | Константа | Значение | Где |
 | --- | --- | --- |
-| `RESUME_ID` | `b424f687ff113123eb0039ed1f7a496e413267` | `hh_agent/config.py` |
-| Порог зарплаты | 150 000 ₽/мес (до налогов или на руки) | `hh_agent/rules.py`, спек |
+| `RESUME_ID` | `b424f687ff113123eb0039ed1f7a496e413267` | `job_finder/config.py` |
+| Порог зарплаты | 150 000 ₽/мес (до налогов или на руки) | `job_finder/rules.py`, спек |
 | `SEARCH_INTERVAL` | 21600 с (6 ч) | `.env` |
 | `SEND_INTERVAL` | 90 с | `.env` |
 | `MAX_SEARCH_PAGES` | 100 | `.env` |
-| `PRACTICE_TECHNOLOGIES` | 18 технологий (Kubernetes … Pydantic) | `hh_agent/letters.py` |
-| Пилот-вакансия | `137924141` | `hh_agent/store.py` |
-| Поиск | `text=Python&schedule=remote&order_by=publication_time` | `hh_agent/browser.py` |
-| Диапазоны опыта | `noExperience`, `between1And3`, `between3And6`, `moreThan6` | `hh_agent/browser.py` |
+| `PRACTICE_TECHNOLOGIES` | 18 технологий (Kubernetes … Pydantic) | `job_finder/letters.py` |
+| Пилот-вакансия | `137924141` | `job_finder/store.py` |
+| Поиск | `text=Python&schedule=remote&order_by=publication_time` | `job_finder/browser.py` |
+| Диапазоны опыта | `noExperience`, `between1And3`, `between3And6`, `moreThan6` | `job_finder/browser.py` |
 | Лимит письма | 10 000 символов; валидация ответа ≤10 000 | HH / `letters.py` |
-| Чанк Telegram | ≤4000 UTF-16 юнитов; пауза 1.05 с | `hh_agent/telegram.py` |
-| Подтверждение отклика | ≤20 с ожидания надписи | `hh_agent/browser.py` |
+| Чанк Telegram | ≤4000 UTF-16 юнитов; пауза 1.05 с | `job_finder/telegram.py` |
+| Подтверждение отклика | ≤20 с ожидания надписи | `job_finder/browser.py` |
 | Диапазон опыта пользователя | опыт 3–6 лет (по контрольной вакансии) | ресёрч |
 
 ## Ключевые селекторы hh.ru (data-qa)

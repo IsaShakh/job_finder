@@ -88,7 +88,7 @@ def configure(root):
     overridden=[name for name in values if name in os.environ and os.environ[name]!=values[name]]
     if overridden:
         print("Внимание: переменные окружения имеют приоритет над сохранёнными значениями: "+", ".join(overridden))
-    print("Настройки сохранены. Теперь выполните: python -m hh_agent pair")
+    print("Настройки сохранены. Теперь выполните: python -m job_finder pair")
 
 
 async def pair(config):
@@ -146,7 +146,7 @@ def doctor(config):
 
 
 async def api_login(config):
-    from .hhapi import authorize
+    from .hh import authorize
     username=input("Email или телефон HH: ").strip()
     if not username:
         raise ValueError("Логин не введён")
@@ -218,7 +218,7 @@ async def browser_command(config, command):
     store.recover()
     try:
         if command in ("run","search") and config.api_token_path.exists():
-            from .hhapi import HHClient
+            from .hh import HHClient
             source=HHClient(config)
             try:
                 if command=="search":

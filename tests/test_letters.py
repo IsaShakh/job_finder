@@ -8,9 +8,9 @@ from unittest.mock import patch
 
 import httpx
 
-from hh_agent.config import Config
-from hh_agent.letters import LetterError, LetterGenerator
-from hh_agent.models import Vacancy
+from job_finder.config import Config
+from job_finder.letters import LetterError, LetterGenerator
+from job_finder.models import Vacancy
 
 
 RU_TEXT = ('Здравствуйте!\n\nОткликаюсь на вашу вакансию https://hh.ru/vacancy/42.\n\n'

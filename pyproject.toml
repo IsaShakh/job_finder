@@ -3,17 +3,17 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "hh-personal-agent"
+name = "job-finder"
 version = "0.1.0"
-description = "Personal hh.ru application queue with Telegram control"
+description = "Personal job search agent with Telegram delivery"
 requires-python = ">=3.9"
 dependencies = ["playwright>=1.51,<2", "httpx>=0.28,<1", "python-dotenv>=1,<2", "cryptography>=42,<46"]
 
 [project.scripts]
-hh-agent = "hh_agent.__main__:main"
+job-finder = "job_finder.__main__:main"
 
 [tool.setuptools.packages.find]
-include = ["hh_agent*"]
+include = ["job_finder*"]
 
 [tool.setuptools.package-data]
-hh_agent = ["profile.json"]
+job_finder = ["profile.json"]

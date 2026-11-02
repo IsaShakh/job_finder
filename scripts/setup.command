@@ -7,7 +7,7 @@ if [[ ! -x .venv/bin/python ]]; then
   exit 1
 fi
 while true; do
-  print "\nНастройка агента hh.ru"
+  print "\nНастройка агента поиска вакансий"
   print "1 — Настройка ключей"
   print "2 — Привязать Telegram"
   print "3 — Войти в HH (API, без браузера)"
@@ -17,12 +17,12 @@ while true; do
   print "0 — Закрыть"
   read "choice?Выберите действие: " || exit 0
   case "$choice" in
-    1) .venv/bin/python -m hh_agent configure ;;
-    2) .venv/bin/python -m hh_agent pair ;;
-    3) .venv/bin/python -m hh_agent api-login ;;
-    4) .venv/bin/python -m hh_agent login ;;
-    5) .venv/bin/python -m hh_agent run ;;
-    6) .venv/bin/python -m hh_agent doctor ;;
+    1) .venv/bin/python -m job_finder configure ;;
+    2) .venv/bin/python -m job_finder pair ;;
+    3) .venv/bin/python -m job_finder api-login ;;
+    4) .venv/bin/python -m job_finder login ;;
+    5) .venv/bin/python -m job_finder run ;;
+    6) .venv/bin/python -m job_finder doctor ;;
     0) exit 0 ;;
     *) print "Выберите номер из меню" ;;
   esac

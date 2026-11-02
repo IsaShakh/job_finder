@@ -6,7 +6,7 @@
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
-│  python -m hh_agent run  (один процесс, fcntl-блокировка)          │
+│  python -m job_finder run  (один процесс, fcntl-блокировка)          │
 │                                                                    │
 │  ┌──────────────┐   ┌──────────────────┐   ┌───────────────────┐   │
 │  │ Engine       │   │ Telegram.poll    │   │ Telegram.flush    │   │
@@ -33,7 +33,7 @@
 - Контуры **не блокируют друг друга**: сбой Telegram не останавливает поиск/отправку, работа с HH не ждёт доставки уведомлений.
 - Всё состояние — в SQLite: при выключении компьютера прогресс сохраняется, при следующем запуске восстанавливается.
 
-## Слои (модули `hh_agent/`)
+## Слои (модули `job_finder/`)
 
 | Модуль | Роль |
 | --- | --- |
@@ -41,7 +41,7 @@
 | `config.py` | Загрузка и строгая валидация `.env` + переменных окружения; пути к состоянию; константа `RESUME_ID` |
 | `rules.py` | Чистые функции правил отбора: `parse_salary`, `evaluate(Vacancy) → Decision` (без I/O) |
 | `store.py` | Вся работа с SQLite: очередь вакансий, статусы, журнал попыток, настройки, inbox/outbox, восстановление |
-| `hhapi.py` | **Основной источник вакансий**: программный API hh.ru (OAuth мобильного приложения) — поиск, чтение, отклик, подтверждение; интерфейс совместим с `Browser` |
+| `hh.py` | **Основной источник вакансий**: программный API hh.ru (OAuth мобильного приложения) — поиск, чтение, отклик, подтверждение; интерфейс совместим с `Browser` |
 | `browser.py` | Адаптер hh.ru через Playwright — теперь **запасной канал** (вход в браузер, редкие формы); только публичная навигация |
 | `letters.py` | Генерация писем: неизменяемые факты профиля, строгая валидация ответа модели, детерминированный fallback |
 | `telegram.py` | Telegram Bot API: owner-only опрос обновлений, команды-отчёты, доставка уведомлений частями с rate-limit |
@@ -91,15 +91,15 @@ run()
 ## Запуск и команды CLI
 
 ```
-.venv/bin/python -m hh_agent init       # создать .env (из .env.example) и .state/
-.venv/bin/python -m hh_agent configure  # ключи: Telegram, LLM (скрытый ввод)
-.venv/bin/python -m hh_agent pair       # одноразовая привязка владельца Telegram
-.venv/bin/python -m hh_agent api-login  # вход в HH через API (пароль или код SMS/email)
-.venv/bin/python -m hh_agent login      # запасной вход в HH в окне браузера
-.venv/bin/python -m hh_agent doctor     # локальная проверка настроек
-.venv/bin/python -m hh_agent search     # один поиск без отправки
-.venv/bin/python -m hh_agent run        # основной режим (поиск+подготовка+отправка+Telegram)
-.venv/bin/python -m hh_agent status     # пауза и счётчики очереди
+.venv/bin/python -m job_finder init       # создать .env (из .env.example) и .state/
+.venv/bin/python -m job_finder configure  # ключи: Telegram, LLM (скрытый ввод)
+.venv/bin/python -m job_finder pair       # одноразовая привязка владельца Telegram
+.venv/bin/python -m job_finder api-login  # вход в HH через API (пароль или код SMS/email)
+.venv/bin/python -m job_finder login      # запасной вход в HH в окне браузера
+.venv/bin/python -m job_finder doctor     # локальная проверка настроек
+.venv/bin/python -m job_finder search     # один поиск без отправки
+.venv/bin/python -m job_finder run        # основной режим (поиск+подготовка+отправка+Telegram)
+.venv/bin/python -m job_finder status     # пауза и счётчики очереди
 ```
 
 Источник вакансий выбирается автоматически: есть `.state/api-token.json` → программный API; нет → браузерный путь.
@@ -112,4 +112,4 @@ run()
 - **httpx** — Telegram Bot API, Chat Completions и API hh.ru.
 - **python-dotenv** — чтение `.env`.
 - **cryptography** — RSA-OAEP для `loginTrustFlags` при входе в HH через API.
-- Требования закреплены в [requirements.lock](../../requirements.lock); проект — в [pyproject.toml](../../pyproject.toml) (Python ≥3.9, entry point `hh-agent`).
+- Требования закреплены в [requirements.lock](../../requirements.lock); проект — в [pyproject.toml](../../pyproject.toml) (Python ≥3.9, entry point `job-finder`).

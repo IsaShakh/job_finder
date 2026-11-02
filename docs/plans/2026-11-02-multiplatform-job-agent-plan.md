@@ -12,7 +12,7 @@
 
 **Техстек:** Python 3.9+, httpx, sqlite3 (WAL), python-dotenv, unittest. Playwright уходит из зависимостей, если ни одна выбранная платформа не потребует браузера для чтения.
 
-**Предыдущие документы:** [дизайн hh-агента](../superpowers/specs/2026-10-19-hh-agent-design.md), [план реализации hh-агента](../superpowers/plans/2026-10-21-hh-agent.md), [база знаний](../knowledge-base/README.md).
+**Предыдущие документы:** [дизайн hh-агента](../superpowers/specs/2026-10-19-job-agent-design.md), [план реализации hh-агента](../superpowers/plans/2026-10-21-job-agent.md), [база знаний](../knowledge-base/README.md).
 
 ---
 
@@ -86,7 +86,7 @@ job_finder/
   adapters/
     __init__.py          # реестр адаптеров, протокол SourceAdapter
     base.py              # общие хелперы: HTTP, rate limiter, backoff, парсинг
-    hh.py                # hh.ru (миграция из текущего hhapi/browser — только чтение)
+    hh.py                # hh.ru (миграция из текущего hh.py, бывш. hhapi.py / browser — только чтение)
     # habr.py, remoteok.py, ... — этап 6
 ```
 
@@ -155,13 +155,13 @@ class SourceAdapter(Protocol):
 
 **Цель:** вынести платформо-независимое ядро; hh становится адаптером. Поведение для hh не меняется, автоотклик удаляется.
 
-**Файлы:** переименование `hh_agent/` → `job_finder/` (решение по имени — см. открытые вопросы); `models.py`, `store.py`, `rules.py`, `config.py`, `engine.py`, `telegram.py`, `letters.py` → `writer.py`, `hhapi.py` → `adapters/hh.py`; `browser.py` удаляется; `pyproject.toml`, `tests/*`, `scripts/*`, `README.md`.
+**Файлы:** переименование `job_finder/` (выполнено 03.11.2026); `models.py`, `store.py`, `rules.py`, `config.py`, `engine.py`, `telegram.py`, `letters.py` → `writer.py`, `hh.py` → `adapters/hh.py`; `browser.py` удаляется; `pyproject.toml`, `tests/*`, `scripts/*`, `README.md`.
 
 - [ ] Переименовать пакет и обновить импорты, `pyproject.toml`, CLI-команды в `scripts/*.command` и README.
 - [ ] `models.py`: ввести каноническую `Vacancy` (п. 2.3); убрать `Outcome`; `Letter` расширить полями `score`, `resume_advice` (заполняются на этапе 4).
 - [ ] `store.py`: миграция схемы — ключ `source:native_id`, колонки `source`/`published_at`, удаление `attempts`/`resume_id`/`evidence`, новые статусы; пилотная запись `137924141` переносится как историческая запись hh или выводится из учёта.
 - [ ] `rules.py`: проверка, что `evaluate()` работает только на канонической модели и не упоминает hh; порог зарплаты и критерии вынести в конфиг.
-- [ ] `adapters/hh.py`: перенести из `hhapi.py` только чтение (поиск + вакансия); удалить всё, связанное с откликом.
+- [ ] `adapters/hh.py`: перенести из `hh.py` только чтение (поиск + вакансия); удалить всё, связанное с откликом.
 - [ ] `engine.py`: новый конвейер `search → fetch → dedupe → rules → score → write → deliver`; заглушки `dedupe`/`scoring` до этапов 3–4 (пропускают, как сейчас).
 - [ ] `config.py`: убрать `HH_LIVE`, `HH_RESUME_ID`, `send_interval`; ввести `PLATFORMS`, общий порог зарплаты, пороги скоринга и дедупа.
 - [ ] `telegram.py`, `__main__.py`: убрать команды/статусы откликов; идентификаторы в командах — `source:native_id`.
@@ -329,5 +329,5 @@ class SourceAdapter(Protocol):
 1. **Список платформ** — от пользователя; определяет этап 6.
 2. **Формат доставки** — каждое письмо сразу или сводка топ-N за цикл (влияет на этап 5).
 3. **Источник эмбеддингов** — какой провайдер LLM будет использоваться и есть ли у него `/embeddings`; иначе SimHash.
-4. **Имя пакета** — переименовывать `hh_agent` → `job_finder` (рекомендую) или оставить старое имя.
+4. **Имя пакета** — решено 02.11.2026: `job_finder`; переименование выполнено 03.11.2026.
 5. **Критерии отбора** — остаются глобальными (Python, удалёнка, 150k) для всех платформ или настраиваются поплатформенно.
