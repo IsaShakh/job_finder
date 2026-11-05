@@ -10,6 +10,8 @@
     TG_API_ID=... TG_API_HASH=... .venv/bin/python scripts/tg_probe.py --read
 
 Ключи читаются из переменных окружения или файла .env (TG_API_ID/TG_API_HASH).
+Если Telegram недоступен напрямую — TG_PROXY=socks5://127.0.0.1:1080
+(или https://...), формат Telethon proxy.
 Сессия сохраняется в .state/tg_probe.session (0600). Только чтение.
 """
 import argparse
@@ -39,6 +41,18 @@ def credentials():
     return int(api_id), api_hash
 
 
+def client_kwargs():
+    """Опциональный прокси из TG_PROXY (Telegram часто недоступен напрямую).
+
+    Формат: socks5://127.0.0.1:1080 или https://user:pass@host:port
+    (как в переменной proxy у Telethon/TelegramClient)."""
+    env = {**dotenv_values(root_dir() / ".env", interpolate=False), **os.environ}
+    proxy = env.get("TG_PROXY", "").strip()
+    if proxy:
+        import python_socks
+    return {"proxy": proxy} if proxy else {}
+
+
 def session_file():
     path = root_dir() / ".state" / "tg_probe.session"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -49,7 +63,8 @@ def session_file():
 async def login():
     from telethon import TelegramClient
     api_id, api_hash = credentials()
-    client = TelegramClient(str(session_file()), api_id, api_hash, system_version="tg-probe-0.5")
+    client = TelegramClient(str(session_file()), api_id, api_hash,
+                            system_version="tg-probe-0.5", **client_kwargs())
     await client.start()
     me = await client.get_me()
     print("Вход подтверждён: %s (@%s)" % (me.first_name or "", me.username or ""))
@@ -60,7 +75,8 @@ async def read_channels():
     from telethon import TelegramClient
     from telethon.errors import ChannelPrivateError
     api_id, api_hash = credentials()
-    client = TelegramClient(str(session_file()), api_id, api_hash, system_version="tg-probe-0.5")
+    client = TelegramClient(str(session_file()), api_id, api_hash,
+                            system_version="tg-probe-0.5", **client_kwargs())
     await client.start()
     fixtures_dir = root_dir() / "docs" / "research" / "fixtures" / "tg_channels"
     fixtures_dir.mkdir(parents=True, exist_ok=True)
