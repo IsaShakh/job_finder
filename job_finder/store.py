@@ -3,9 +3,78 @@ import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from .migrate import DEFAULT_SETTINGS, backup_to, migrate
 from .models import Letter, Vacancy
 
-STATES = {"found", "rejected", "needs_clarification", "ready", "sending", "sent", "unknown", "error", "closed"}
+# Целевые статусы (раздел 5 плана): статусы отправки удалены вместе
+# с автооткликом (1b); их данные переносятся в архив миграцией 1c.
+STATES = {"found", "read", "rejected", "skipped", "needs_clarification",
+          "ready", "delivered", "closed", "error"}
+# Терминальные статусы: автоматика их не перезаписывает.
+TERMINAL = ("skipped", "closed")
+
+CREATE_V4 = '''
+CREATE TABLE jobs (
+  id TEXT PRIMARY KEY, data TEXT NOT NULL, status TEXT NOT NULL,
+  reason TEXT NOT NULL DEFAULT '', letter TEXT,
+  created TEXT NOT NULL, updated TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'hh', native_id TEXT, published_at TEXT,
+  cluster_id TEXT, last_seen TEXT, last_read TEXT,
+  norm_company TEXT, norm_title TEXT, content_hash TEXT,
+  test_required INTEGER NOT NULL DEFAULT 0,
+  grade TEXT, grade_evidence TEXT, skills TEXT,
+  rules_version TEXT, profile_version TEXT,
+  manual_decision TEXT, manual_decision_at TEXT);
+CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE inbox (update_id INTEGER PRIMARY KEY, command TEXT, created TEXT NOT NULL);
+CREATE TABLE outbox (id INTEGER PRIMARY KEY, text TEXT NOT NULL,
+  sent INTEGER NOT NULL DEFAULT 0, created TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'event', job_id TEXT, cluster_id TEXT,
+  legacy INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE skip_events (id INTEGER PRIMARY KEY, job_id TEXT NOT NULL,
+  reason TEXT NOT NULL, created TEXT NOT NULL, reported INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE application_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  origin TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  started TEXT,
+  ended TEXT,
+  evidence TEXT,
+  reason TEXT,
+  letter TEXT,
+  data TEXT,
+  created TEXT NOT NULL);
+CREATE TABLE clusters (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  rep_job_id TEXT,
+  centroid BLOB,
+  embedding_model TEXT,
+  embedding_dim INTEGER,
+  created TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'none',
+  skipped_at TEXT);
+CREATE TABLE job_embeddings (
+  job_id TEXT PRIMARY KEY,
+  embedding BLOB,
+  model TEXT,
+  dim INTEGER,
+  content_hash TEXT);
+CREATE TABLE llm_calls (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id TEXT,
+  kind TEXT,
+  model TEXT,
+  prompt_tokens INTEGER,
+  completion_tokens INTEGER,
+  cost REAL,
+  created TEXT NOT NULL);
+CREATE INDEX idx_jobs_norm_company ON jobs(norm_company);
+CREATE INDEX idx_jobs_norm_title ON jobs(norm_title);
+CREATE INDEX idx_jobs_cluster_id ON jobs(cluster_id);
+'''
+
+PILOT_REASON = "отклик уже отправлен ранее (архив)"
 
 
 def now():
@@ -25,35 +94,45 @@ class Store:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         version = self.conn.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1, 2, 3):
+        if version not in (0, 1, 2, 3, 4):
             self.conn.close()
             raise ValueError("База создана более новой версией приложения")
-        self.conn.executescript('''
-        CREATE TABLE IF NOT EXISTS jobs (
-          id TEXT PRIMARY KEY, data TEXT NOT NULL, status TEXT NOT NULL,
-          reason TEXT NOT NULL DEFAULT '', letter TEXT, resume_id TEXT,
-          evidence TEXT NOT NULL DEFAULT '', created TEXT NOT NULL, updated TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS inbox (update_id INTEGER PRIMARY KEY, command TEXT, created TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS outbox (id INTEGER PRIMARY KEY, text TEXT NOT NULL, sent INTEGER NOT NULL DEFAULT 0, created TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'event');
-        CREATE TABLE IF NOT EXISTS skip_events (id INTEGER PRIMARY KEY, job_id TEXT NOT NULL, reason TEXT NOT NULL, created TEXT NOT NULL, reported INTEGER NOT NULL DEFAULT 0);
-        ''')
+        existing = {row[0] for row in self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        if version < 4:
+            if "jobs" in existing:
+                # Миграция 3→4 (контракт R6): свежий бэкап ПЕРЕД изменениями.
+                backup_to(path, path.parent / "backups")
+                migrate(self.conn)
+            else:
+                # Свежая база создаётся сразу в целевой схеме.
+                self.conn.executescript(CREATE_V4)
+                self.conn.execute("PRAGMA user_version=4")
         with self.conn:
-            self.conn.execute("BEGIN IMMEDIATE")
-            if "kind" not in {row[1] for row in self.conn.execute("PRAGMA table_info(outbox)")}:
-                self.conn.execute("ALTER TABLE outbox ADD COLUMN kind TEXT NOT NULL DEFAULT 'event'")
-                prefix="Отклик подтверждён: "
-                self.conn.execute("UPDATE outbox SET kind='success' WHERE substr(text,1,?)=?",(len(prefix),prefix))
-            self.conn.execute("PRAGMA user_version=3")
-            self.conn.execute("INSERT OR IGNORE INTO settings VALUES ('paused','true')")
-            pilot = Vacancy("137924141", "Инженер поддержки и развития (LLM-агенты)", "Python", company="Ат Проф", remote=True)
-            self.conn.execute("INSERT OR IGNORE INTO jobs(id,data,status,reason,evidence,created,updated) VALUES(?,?,'sent',?,?,?,?)", (pilot.id,dump(pilot.to_dict()),"Контрольный отклик от 21.10.2026","Подтверждены история HH и чат 5727309591",now(),now()))
+            for key, value in DEFAULT_SETTINGS.items():
+                self.conn.execute("INSERT OR IGNORE INTO settings VALUES (?,?)", (key, dump(value)))
+            pilot = Vacancy("137924141", "Инженер поддержки и развития (LLM-агенты)",
+                            "Python", company="Ат Проф", remote=True)
+            self.conn.execute("INSERT OR IGNORE INTO jobs(id,data,status,reason,created,updated)"
+                              " VALUES(?,?,'skipped',?,?,?)",
+                              ("hh:137924141", dump(pilot.to_dict()), PILOT_REASON, now(), now()))
+
+    @staticmethod
+    def key(job_id):
+        """Ключ источника: source:native_id; hh — единственный источник."""
+        job_id = str(job_id)
+        return job_id if ":" in job_id else "hh:" + job_id
+
+    @staticmethod
+    def native(job_id):
+        job_id = str(job_id)
+        return job_id.split(":", 1)[1] if ":" in job_id else job_id
 
     def close(self):
         self.conn.close()
 
     def get(self, job_id):
-        row = self.conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        row = self.conn.execute("SELECT * FROM jobs WHERE id=?", (self.key(job_id),)).fetchone()
         if row is None:
             return None
         row = dict(row)
@@ -63,29 +142,31 @@ class Store:
 
     def discover(self, vacancy):
         with self.conn:
-            cursor=self.conn.execute("INSERT OR IGNORE INTO jobs(id,data,status,created,updated) VALUES(?,?,'found',?,?)", (vacancy.id,dump(vacancy.to_dict()),now(),now()))
+            cursor=self.conn.execute("INSERT OR IGNORE INTO jobs(id,data,status,created,updated) VALUES(?,?,'found',?,?)", (self.key(vacancy.id),dump(vacancy.to_dict()),now(),now()))
         return bool(cursor.rowcount)
 
     def refresh(self, vacancy):
         with self.conn:
-            self.conn.execute("UPDATE jobs SET data=?,updated=? WHERE id=?",(dump(vacancy.to_dict()),now(),vacancy.id))
+            self.conn.execute("UPDATE jobs SET data=?,updated=? WHERE id=?",(dump(vacancy.to_dict()),now(),self.key(vacancy.id)))
 
     def decide(self, job_id, status, reason):
         if status not in STATES:
             raise ValueError("Неизвестный статус")
         with self.conn:
-            previous=self.conn.execute("SELECT status,reason FROM jobs WHERE id=?",(job_id,)).fetchone()
-            cursor=self.conn.execute("UPDATE jobs SET status=?,reason=?,updated=? WHERE id=? AND status NOT IN ('sent','sending','unknown')",(status,reason,now(),job_id))
+            previous=self.conn.execute("SELECT status,reason FROM jobs WHERE id=?",(self.key(job_id),)).fetchone()
+            placeholders=",".join("?" for _ in TERMINAL)
+            cursor=self.conn.execute("UPDATE jobs SET status=?,reason=?,updated=? WHERE id=? AND status NOT IN ("+placeholders+")",(status,reason,now(),self.key(job_id),*TERMINAL))
             if cursor.rowcount:
                 self._record_skip(job_id,status,reason,previous)
 
     def make_ready(self, job_id, letter, reason):
         with self.conn:
-            self.conn.execute("UPDATE jobs SET letter=?,status='ready',reason=?,updated=? WHERE id=? AND status='found'",(dump(letter.to_dict()),reason,now(),job_id))
+            self.conn.execute("UPDATE jobs SET letter=?,status='ready',reason=?,updated=? WHERE id=? AND status='found'",(dump(letter.to_dict()),reason,now(),self.key(job_id)))
 
     def save_letter(self, job_id, letter):
         with self.conn:
-            self.conn.execute("UPDATE jobs SET letter=?,updated=? WHERE id=? AND status NOT IN ('sending','sent','unknown')",(dump(letter.to_dict()),now(),job_id))
+            placeholders=",".join("?" for _ in TERMINAL)
+            self.conn.execute("UPDATE jobs SET letter=?,updated=? WHERE id=? AND status NOT IN ("+placeholders+")",(dump(letter.to_dict()),now(),self.key(job_id),*TERMINAL))
 
     def setting(self, key, default=None):
         row=self.conn.execute("SELECT value FROM settings WHERE key=?",(key,)).fetchone()

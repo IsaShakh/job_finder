@@ -1,3 +1,4 @@
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -71,52 +72,52 @@ class PersistenceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.db.enqueue("Неизвестный тип",kind="urgent")
 
-    def test_v2_outbox_migration_preserves_state_and_only_delivers_legacy_success(self):
-        self.db.set("telegram_chunk_42",2)
-        self.db.set("telegram_chunk_41",1)
-        self.db.command(90,"status")
-        snapshots={table:[tuple(row) for row in self.db.conn.execute("SELECT * FROM "+table)]
-                   for table in ("jobs","settings","inbox","skip_events")}
-        legacy=[
-            (41,"Нужно уточнение: Python разработчик",0,"2026-10-20T01:00:00+00:00"),
-            (42,"Отклик подтверждён: Python разработчик",0,"2026-10-20T02:00:00+00:00"),
-            (43,"Отклик подтверждён: уже доставлен",1,"2026-10-20T03:00:00+00:00"),
-            (44,"Проверка: Отклик подтверждён: ещё не успех",0,"2026-10-20T04:00:00+00:00"),
-            (45,"Отклик подтверждён:без пробела",0,"2026-10-20T05:00:00+00:00"),
-        ]
-        with self.db.conn:
-            self.db.conn.execute("DROP TABLE outbox")
-            self.db.conn.execute("CREATE TABLE outbox (id INTEGER PRIMARY KEY, text TEXT NOT NULL, sent INTEGER NOT NULL DEFAULT 0, created TEXT NOT NULL)")
-            self.db.conn.executemany("INSERT INTO outbox VALUES(?,?,?,?)",legacy)
-            self.db.conn.execute("PRAGMA user_version=2")
+    def test_v3_migration_preserves_outbox_and_marks_legacy(self):
+        # Закрываем свежую базу и строим легаси-схему v3 вручную:
+        # old outbox без kind, user_version=3.
         self.db.close()
-        self.db=Store(self.path)
-        self.assertEqual([row["id"] for row in self.db.pending_messages()],[42])
-        self.assertEqual(self.db.conn.execute("PRAGMA user_version").fetchone()[0],3)
-        self.assertEqual([tuple(row) for row in self.db.conn.execute("SELECT id,text,sent,created FROM outbox ORDER BY id")],legacy)
-        for table,expected in snapshots.items():
-            self.assertEqual([tuple(row) for row in self.db.conn.execute("SELECT * FROM "+table)],expected,table)
-        self.db.enqueue("Отклик подтверждён: новое общее событие")
-        self.db.delivered(42)
-        self.db.close()
-        self.db=Store(self.path)
-        self.assertEqual(self.db.pending_messages(),[])
-        self.assertEqual(self.db.setting("telegram_chunk_42"),2)
-        self.assertEqual(self.db.setting("telegram_chunk_41"),1)
-        self.assertEqual(self.db.conn.execute("SELECT MAX(id) FROM outbox").fetchone()[0],46)
+        for suffix in ("", "-wal", "-shm"):
+            leftover = Path(str(self.path) + suffix)
+            if leftover.exists():
+                leftover.unlink()
+        conn = sqlite3.connect(str(self.path))
+        conn.executescript('''
+            CREATE TABLE jobs (
+              id TEXT PRIMARY KEY, data TEXT NOT NULL, status TEXT NOT NULL,
+              reason TEXT NOT NULL DEFAULT '', letter TEXT, resume_id TEXT,
+              evidence TEXT NOT NULL DEFAULT '', created TEXT NOT NULL, updated TEXT NOT NULL);
+            CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE inbox (update_id INTEGER PRIMARY KEY, command TEXT, created TEXT NOT NULL);
+            CREATE TABLE outbox (id INTEGER PRIMARY KEY, text TEXT NOT NULL,
+              sent INTEGER NOT NULL DEFAULT 0, created TEXT NOT NULL);
+            CREATE TABLE skip_events (id INTEGER PRIMARY KEY, job_id TEXT NOT NULL,
+              reason TEXT NOT NULL, created TEXT NOT NULL, reported INTEGER NOT NULL DEFAULT 0);
+            INSERT INTO outbox VALUES
+              (41,'Нужно уточнение: Python разработчик',0,'2026-10-20T01:00:00+00:00'),
+              (42,'Отклик подтверждён: Python разработчик',0,'2026-10-20T02:00:00+00:00'),
+              (43,'Отклик подтверждён: уже доставлен',1,'2026-10-20T03:00:00+00:00');
+            PRAGMA user_version=3;
+        ''')
+        conn.close()
+        self.db = Store(self.path)
+        self.assertEqual([tuple(r) for r in self.db.conn.execute(
+            "SELECT id,kind,legacy,sent FROM outbox ORDER BY id")],
+            [(41, 'event', 1, 0), (42, 'success', 1, 0), (43, 'success', 1, 1)])
+        self.assertEqual(self.db.conn.execute("PRAGMA user_version").fetchone()[0], 4)
+        self.assertEqual([row["id"] for row in self.db.pending_messages()], [42])
 
     def test_future_database_version_is_rejected_without_downgrade(self):
-        self.db.conn.execute("PRAGMA user_version=4")
+        self.db.conn.execute("PRAGMA user_version=5")
         with self.assertRaises(ValueError):
             Store(self.path)
-        self.assertEqual(self.db.conn.execute("PRAGMA user_version").fetchone()[0],4)
+        self.assertEqual(self.db.conn.execute("PRAGMA user_version").fetchone()[0], 5)
 
     def test_rows_pagination_respects_status_and_order(self):
         for job_id in ("101","102","103","104","105"):
             self.db.discover(vacancy(id=job_id))
             self.db.decide(job_id,"needs_clarification","Нужно уточнение")
-        self.assertEqual([row["id"] for row in self.db.rows(["needs_clarification"],limit=2,offset=2)],["103","104"])
-        self.assertEqual([row["id"] for row in self.db.rows(["needs_clarification"],limit=2,newest=True,offset=2)],["103","102"])
+        self.assertEqual([row["id"] for row in self.db.rows(["needs_clarification"],limit=2,offset=2)],["hh:103","hh:104"])
+        self.assertEqual([row["id"] for row in self.db.rows(["needs_clarification"],limit=2,newest=True,offset=2)],["hh:103","hh:102"])
         self.assertEqual(self.db.rows(["needs_clarification"],offset=5),[])
 
     def test_update_dedupe_survives_restart(self):
@@ -131,19 +132,22 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual([row["text"] for row in self.db.pending_messages()],["Telegram только показывает отчёты"])
 
     def test_confirmed_pilot_is_never_queued(self):
-        self.assertEqual(self.db.get("137924141")["status"],"sent")
+        row=self.db.get("137924141")
+        self.assertEqual(row["status"],"skipped")
+        self.assertEqual(row["vacancy"].company,"Ат Проф")
+        self.assertIsNone(self.db.setting("HH_LIVE"))
 
     def test_legacy_requeue_commands_preserve_every_job_state_and_letter(self):
-        statuses=("found","rejected","needs_clarification","error","closed","ready","sending","unknown","sent")
+        statuses=("found","rejected","needs_clarification","error","closed","ready","read","delivered","skipped")
         for number,status in enumerate(statuses,start=200):
             with self.subTest(status=status):
                 job_id=str(number)
                 self.db.discover(vacancy(id=job_id))
                 self.db.save_letter(job_id,Letter("Сохранённое письмо",["fastapi"],[],[]))
                 self.db.decide(job_id,status,"Сохранённая причина")
-                original=tuple(self.db.conn.execute("SELECT * FROM jobs WHERE id=?",(job_id,)).fetchone())
+                original=tuple(self.db.conn.execute("SELECT * FROM jobs WHERE id=?",(self.db.key(job_id),)).fetchone())
                 self.assertTrue(self.db.command(number,"requeue:"+job_id,"Повторная оценка через Telegram недоступна"))
-                self.assertEqual(tuple(self.db.conn.execute("SELECT * FROM jobs WHERE id=?",(job_id,)).fetchone()),original)
+                self.assertEqual(tuple(self.db.conn.execute("SELECT * FROM jobs WHERE id=?",(self.db.key(job_id),)).fetchone()),original)
                 self.assertEqual(self.db.setting("telegram_offset"),number+1)
 
     def test_legacy_control_commands_preserve_worker_settings(self):

@@ -99,7 +99,7 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
     async def test_discovery_includes_all_ids_and_preserves_pilot(self):
         await self.engine.search()
         self.assertEqual(self.db.get("123")["status"],"found")
-        self.assertEqual(self.db.get("137924141")["status"],"sent")
+        self.assertEqual(self.db.get("137924141")["status"],"skipped")
         self.assertEqual(self.db.pending_messages(),[])
 
     async def test_preparation_clarification_is_saved_without_notification(self):

@@ -53,7 +53,7 @@ class Engine:
         if not row or row["status"]!="found":
             return
         try:
-            vacancy=await self.source.read(job_id)
+            vacancy=await self.source.read(self.store.native(job_id))
             self.store.refresh(vacancy)
             decision=evaluate(vacancy)
             reason=decision.reason
@@ -72,14 +72,14 @@ class Engine:
             self.attention(str(exc))
         except Exception as exc:
             self.store.decide(job_id,"error","Подготовка не удалась: "+type(exc).__name__)
-            self.store.enqueue("Не удалось подготовить вакансию "+job_id+" ("+type(exc).__name__+"). Повтор возможен вручную.")
+            self.store.enqueue("Не удалось подготовить вакансию "+self.store.native(job_id)+" ("+type(exc).__name__+"). Повтор возможен вручную.")
 
     def digest(self, skipped=None):
-        labels={"found":"ждут чтения","ready":"готовы","sent":"отправлены","rejected":"отсеяны","needs_clarification":"уточнение","unknown":"результат неизвестен","error":"ошибки","closed":"закрыты","sending":"отправляются"}
+        labels={"found":"ждут чтения","read":"прочитаны","ready":"готовы","delivered":"доставлены","rejected":"отсеяны","needs_clarification":"уточнение","skipped":"пропущены","error":"ошибки","closed":"закрыты"}
         text="Сводка очереди\n"+"\n".join(labels.get(k,k)+": "+str(v) for k,v in self.store.counts().items())
         cutoff=self.store.setting('last_digest_at','1970-01-01T00:00:00+00:00')
-        rows=[row for row in self.store.rows(limit=100000) if row['id']!='137924141']
-        text+='\n\nС предыдущей сводки: новых %s, подтверждено %s, отсеяно %s.' % (sum(row['created']>=cutoff for row in rows),sum(row['status']=='sent' and row['updated']>=cutoff for row in rows),sum(row['status']=='rejected' and row['updated']>=cutoff for row in rows))
+        rows=[row for row in self.store.rows(limit=100000) if row['id']!='hh:137924141']
+        text+='\n\nС предыдущей сводки: новых %s, готово %s, отсеяно %s.' % (sum(row['created']>=cutoff for row in rows),sum(row['status']=='ready' and row['updated']>=cutoff for row in rows),sum(row['status']=='rejected' and row['updated']>=cutoff for row in rows))
         skipped=self.store.pending_skips() if skipped is None else skipped
         if skipped:
             text+="\n\nПропуски из-за теста с предыдущей сводки:\n"+"\n".join('https://hh.ru/vacancy/'+r['job_id']+" — "+r["reason"] for r in skipped)

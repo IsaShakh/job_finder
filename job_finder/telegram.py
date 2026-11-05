@@ -19,9 +19,9 @@ HELP = ('Команды отчётов:\n/status — состояние рабо
         'Работа начинается при запуске скрипта на компьютере. Остановка — закрытием процесса. '
         'Telegram показывает отчёты; откликаетесь вы сами, автоматической отправки нет.')
 
-STATUS_LABELS = {'found': 'найдена', 'rejected': 'пропущена', 'needs_clarification': 'нужно уточнение',
-    'ready': 'готова', 'sending': 'отправляется', 'sent': 'отправлена',
-    'unknown': 'результат неизвестен', 'error': 'ошибка', 'closed': 'закрыта'}
+STATUS_LABELS = {'found': 'найдена', 'read': 'прочитана', 'rejected': 'отсеяна',
+    'skipped': 'пропущена', 'needs_clarification': 'нужно уточнение',
+    'ready': 'готова', 'delivered': 'доставлена', 'error': 'ошибка', 'closed': 'закрыта'}
 
 
 class TelegramError(RuntimeError):
@@ -108,7 +108,7 @@ class Telegram:
                 lines.append('Следующая страница: /clarifications ' + str(page + 1))
             return 'clarifications', '\n\n'.join(lines)
         if command == '/history':
-            statuses = ['sent', 'rejected', 'closed', 'error', 'unknown']
+            statuses = ['rejected', 'skipped', 'closed', 'error']
             rows = self.store.rows(statuses, limit=20, newest=True)
             lines = ['История (до 20 записей)']
             for row in rows:

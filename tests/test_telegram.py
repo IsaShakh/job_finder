@@ -384,7 +384,7 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
     async def test_history_shows_latest_twenty_entries(self):
         for number in range(200, 225):
             self.store.discover(Vacancy(str(number), 'History vacancy ' + str(number), 'Python'))
-            self.store.decide(str(number), 'sent', 'Confirmed earlier')
+            self.store.decide(str(number), 'rejected', 'Отсеяна правилами')
             with self.store.conn:
                 self.store.conn.execute('UPDATE jobs SET created=? WHERE id=?',
                                         ('2027-01-01T00:00:' + str(number - 200).zfill(2), str(number)))
