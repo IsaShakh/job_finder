@@ -69,7 +69,7 @@ cd /Users/vll/VLL/projects/job_finder_v2
 .venv/bin/python -m job_finder run
 ```
 
-Установка в новую папку на macOS/Linux с Python 3.9 или новее:
+Установка в новую папку на macOS/Linux с Python 3.12 или новее:
 
 ```sh
 python3 -m venv .venv

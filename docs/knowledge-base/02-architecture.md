@@ -112,4 +112,4 @@ run()
 - **httpx** — Telegram Bot API, Chat Completions и API hh.ru.
 - **python-dotenv** — чтение `.env`.
 - **cryptography** — RSA-OAEP для `loginTrustFlags` при входе в HH через API.
-- Требования закреплены в [requirements.lock](../../requirements.lock); проект — в [pyproject.toml](../../pyproject.toml) (Python ≥3.9, entry point `job-finder`).
+- Требования закреплены в [requirements.lock](../../requirements.lock); проект — в [pyproject.toml](../../pyproject.toml) (Python ≥3.12, entry point `job-finder`).
