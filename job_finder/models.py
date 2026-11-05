@@ -19,9 +19,14 @@ class Vacancy:
     company: str = ""
     salary: Optional[Salary] = None
     remote: Optional[bool] = None
+    remote_geo: Optional[str] = None
+    location: Optional[str] = None
     test_required: bool = False
     closed: bool = False
     requirements: str = ""
+    salary_gross: Optional[bool] = None
+    published_at: Optional[str] = None
+    language: str = "ru"
 
     @property
     def url(self):

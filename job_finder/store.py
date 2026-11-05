@@ -149,13 +149,13 @@ class Store:
         with self.conn:
             self.conn.execute("UPDATE jobs SET data=?,updated=? WHERE id=?",(dump(vacancy.to_dict()),now(),self.key(vacancy.id)))
 
-    def decide(self, job_id, status, reason):
+    def decide(self, job_id, status, reason, grade=None, grade_evidence=None, rules_version=None):
         if status not in STATES:
             raise ValueError("Неизвестный статус")
         with self.conn:
             previous=self.conn.execute("SELECT status,reason FROM jobs WHERE id=?",(self.key(job_id),)).fetchone()
             placeholders=",".join("?" for _ in TERMINAL)
-            cursor=self.conn.execute("UPDATE jobs SET status=?,reason=?,updated=? WHERE id=? AND status NOT IN ("+placeholders+")",(status,reason,now(),self.key(job_id),*TERMINAL))
+            cursor=self.conn.execute("UPDATE jobs SET status=?,reason=?,grade=?,grade_evidence=?,rules_version=?,updated=? WHERE id=? AND status NOT IN ("+placeholders+")",(status,reason,grade,grade_evidence,rules_version,now(),self.key(job_id),*TERMINAL))
             if cursor.rowcount:
                 self._record_skip(job_id,status,reason,previous)
 

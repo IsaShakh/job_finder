@@ -9,7 +9,7 @@ import asyncio
 import time
 from datetime import datetime, timezone
 from .models import AttentionRequired, RateLimited, VacancyUnavailable
-from .rules import evaluate
+from .rules import evaluate_all
 from .store import Store
 
 # Правило тестов после удаления автоотклика (решение 05.11.2026):
@@ -123,16 +123,20 @@ class Engine:
         try:
             vacancy=await adapter.fetch(Store.native(job_id))
             await self.store.refresh(source, vacancy)
-            decision=evaluate(vacancy)
-            reason=decision.reason
-            if vacancy.test_required and decision.status in ("ready","needs_clarification"):
+            assessment=evaluate_all(vacancy, self.config.profiles)
+            reason=assessment.reason
+            if vacancy.test_required and assessment.status in ("ready","needs_clarification"):
                 reason += " · " + TEST_LABEL
-            if decision.status=="ready":
+            current_rules = await self.store.setting('rules_version')
+            if assessment.status=="ready":
                 letter=await self.writer.generate(vacancy)
                 await self.store.make_ready(job_id,letter,reason)
             else:
-                await self.store.decide(job_id,decision.status,reason)
-                if decision.status=="needs_clarification":
+                await self.store.decide(job_id,assessment.status,reason,
+                                        grade=assessment.grade,
+                                        grade_evidence=assessment.grade_evidence,
+                                        rules_version=current_rules)
+                if assessment.status=="needs_clarification":
                     await self.store.enqueue("Нужно уточнение: "+vacancy.title+"\n"+vacancy.url+"\n"+reason)
         except VacancyUnavailable as exc:
             await self.store.decide(job_id,"needs_clarification",str(exc))
@@ -141,6 +145,41 @@ class Engine:
         except Exception as exc:
             await self.store.decide(job_id,"error","Подготовка не удалась: "+type(exc).__name__)
             await self.store.enqueue("Не удалось подготовить вакансию "+Store.native(job_id)+" ("+type(exc).__name__+"). Повтор возможен вручную.")
+
+    async def reassess(self, job_id):
+        """Переоценка строки, решённой старыми правилами (16.2, раздел 12)."""
+        row = await self.store.get(job_id)
+        if row is None:
+            return
+        adapter = self._adapter_for(job_id)
+        if adapter is None:
+            return
+        current_rules = await self.store.setting('rules_version')
+        try:
+            vacancy=await adapter.fetch(Store.native(job_id))
+            source = str(job_id).split(":", 1)[0]
+            await self.store.refresh(source, vacancy)
+            assessment=evaluate_all(vacancy, self.config.profiles)
+            reason=assessment.reason
+            if vacancy.test_required and assessment.status in ("ready","needs_clarification"):
+                reason += " · " + TEST_LABEL
+            if assessment.status=="ready":
+                letter=await self.writer.generate(vacancy)
+                await self.store.reassess(job_id,"ready",reason,letter=letter,
+                                          grade=assessment.grade,
+                                          grade_evidence=assessment.grade_evidence,
+                                          rules_version=current_rules)
+            else:
+                await self.store.reassess(job_id,assessment.status,reason,
+                                          grade=assessment.grade,
+                                          grade_evidence=assessment.grade_evidence,
+                                          rules_version=current_rules)
+        except VacancyUnavailable as exc:
+            await self.store.reassess(job_id,"needs_clarification",str(exc),rules_version=current_rules)
+        except AttentionRequired as exc:
+            await self.attention(str(exc))
+        except Exception as exc:
+            await self.store.decide(job_id,"error","Переоценка не удалась: "+type(exc).__name__)
 
     async def digest(self, skipped=None):
         labels={"found":"ждут чтения","read":"прочитаны","ready":"готовы","delivered":"доставлены","rejected":"отсеяны","needs_clarification":"уточнение","skipped":"пропущены","error":"ошибки","closed":"закрыты"}
@@ -159,6 +198,11 @@ class Engine:
             return
         await self.run_pending_rounds()
         if await self.resume_waiting():
+            return
+        # Сначала переоценка строк, решённых старыми правилами (16.2).
+        stale=await self.store.stale_row()
+        if stale:
+            await self.reassess(stale)
             return
         job_id=await self.store.first_found()
         if job_id:

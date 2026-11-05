@@ -32,7 +32,8 @@ DEFAULT_SETTINGS = {
     "paused": True,
     "DELIVER": True,
     "NOTIFY_MODE": "immediate",
-    "rules_version": "legacy",
+    # Правила v3 (этап 2a): legacy-строки переоценятся в первом раунде.
+    "rules_version": "v3",
     "profile_version": "legacy",
 }
 

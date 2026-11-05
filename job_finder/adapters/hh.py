@@ -98,9 +98,12 @@ def vacancy_from_json(data):
         company=employer.get("name") or "",
         salary=parsed_salary,
         remote=remote,
+        location=(data.get("area") or {}).get("name") or None,
         test_required=bool(data.get("has_test") or (data.get("test") or {}).get("required")),
         closed=bool(data.get("archived") or vacancy_type == "closed"),
         requirements=", ".join(item.get("name") or "" for item in (data.get("key_skills") or [])),
+        salary_gross=bool(salary.get("gross")) if salary else None,
+        published_at=data.get("published_at"),
     )
 
 

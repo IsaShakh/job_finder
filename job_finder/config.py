@@ -9,6 +9,22 @@ from dotenv import dotenv_values
 
 
 @dataclass(frozen=True)
+class Profile:
+    """Профиль отбора (правила v3): регион, зарплатный порог, целевой город."""
+    name: str
+    region: str            # 'RU' | 'intl'
+    threshold: int = 0     # порог RUB/мес; 0 = без порога
+    city: str = ""
+
+
+# Активные профили по умолчанию (раздел 7 плана); выбор — PROFILES в .env.
+PROFILES = {
+    "ru": Profile(name="ru", region="RU", threshold=150000, city="Москва"),
+    "intl": Profile(name="intl", region="intl", threshold=0, city="Дубай"),
+}
+
+
+@dataclass(frozen=True)
 class Config:
     root: Path
     state_dir: Path
@@ -20,6 +36,7 @@ class Config:
     llm_api_key: str = field(default='', repr=False)
     llm_model: str = ''
     sources: tuple = ('hh',)
+    profiles: tuple = (PROFILES["ru"], PROFILES["intl"])
     max_search_pages: int = 100
 
     @classmethod
@@ -45,6 +62,15 @@ class Config:
             items = tuple(item.strip() for item in raw.split(',') if item.strip())
             return items or (default,)
 
+        def profiles():
+            names = list_of('PROFILES', 'ru,intl')
+            resolved = []
+            for name in names:
+                if name not in PROFILES:
+                    raise ValueError('PROFILES: неизвестный профиль ' + name)
+                resolved.append(PROFILES[name])
+            return tuple(resolved)
+
         token = value('TELEGRAM_BOT_TOKEN')
         if token and not re.fullmatch(r'[0-9]+:[A-Za-z0-9_-]+', token):
             raise ValueError('Некорректный TELEGRAM_BOT_TOKEN')
@@ -67,4 +93,5 @@ class Config:
                    owner_id=owner, llm_base_url=base, llm_api_key=value('LLM_API_KEY'),
                    llm_model=value('LLM_MODEL'),
                    sources=list_of('SOURCES', 'hh'),
+                   profiles=profiles(),
                    max_search_pages=positive('MAX_SEARCH_PAGES', 100))

@@ -185,6 +185,53 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(await self.store.setting("last_digest_at"))
         self.assertEqual(await self.store.pending_messages(), [])
 
+    async def test_stale_legacy_row_is_reassessed_with_new_rules(self):
+        # Строка, решённая старыми правилами (например, после миграции 1c),
+        # переоценивается в первом раунде и получает новое письмо.
+        job = vacancy(id="1001", salary=Salary(200000))
+        source = Probe("probe", fetch_for={"1001": job})
+        await self.store.discover("probe", vacancy(id="1001"))
+        await self.store.make_ready("probe:1001",
+                                    Letter("Старое письмо", ["python_backend"], [], []),
+                                    "старое правило")
+        await self.store._conn.execute("UPDATE jobs SET rules_version='legacy' WHERE id='probe:1001'")
+        await self.store._conn.commit()
+        engine = self.engine([source])
+        await engine.tick()
+        row = await self.store.get("probe:1001")
+        self.assertEqual(row["status"], "ready")
+        self.assertEqual(row["rules_version"], "v3")
+        self.assertNotEqual(row["letter"].text, "Старое письмо")
+
+    async def test_legacy_test_rejection_is_reassessed_to_ready_with_label(self):
+        job = vacancy(id="1002", salary=Salary(200000), test_required=True)
+        source = Probe("probe", fetch_for={"1002": job})
+        await self.store.discover("probe", vacancy(id="1002"))
+        await self.store.decide("probe:1002", "rejected", "Пропущена: предложено пройти тест",
+                                rules_version="legacy")
+        engine = self.engine([source])
+        await engine.tick()
+        row = await self.store.get("probe:1002")
+        self.assertEqual(row["status"], "ready")
+        self.assertIn(TEST_LABEL, row["reason"])
+
+    async def test_legacy_ready_row_failing_new_rules_is_rejected(self):
+        not_python = vacancy(id="1003", title="Java developer", description="Java",
+                             salary=Salary(200000))
+        source = Probe("probe", fetch_for={"1003": not_python})
+        await self.store.discover("probe", vacancy(id="1003"))
+        await self.store.make_ready("probe:1003",
+                                    Letter("Старое письмо", ["python_backend"], [], []),
+                                    "старое правило")
+        await self.store._conn.execute("UPDATE jobs SET rules_version='legacy' WHERE id='probe:1003'")
+        await self.store._conn.commit()
+        engine = self.engine([source])
+        await engine.tick()
+        row = await self.store.get("probe:1003")
+        self.assertEqual(row["status"], "rejected")
+        self.assertEqual(row["rules_version"], "v3")
+        self.assertIsNone(row["letter"])
+
     async def test_attention_pauses_delivery_and_blocks_work(self):
         engine = self.engine([])
         await engine.attention("Нужен вход")

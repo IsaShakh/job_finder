@@ -106,8 +106,18 @@ class AsyncStore:
     async def refresh(self, source, vacancy):
         return await self._call("refresh", source, vacancy)
 
-    async def decide(self, job_id, status, reason):
-        return await self._call("decide", job_id, status, reason)
+    async def decide(self, job_id, status, reason, grade=None, grade_evidence=None, rules_version=None):
+        return await self._call("decide", job_id, status, reason, grade, grade_evidence, rules_version)
+
+    async def reassess(self, job_id, status, reason, letter=None, grade=None,
+                       grade_evidence=None, rules_version=None):
+        """Переоценка не-терминальной строки (смена правил/профиля, 16.2)."""
+        return await self._call("reassess", job_id, status, reason, letter, grade,
+                                grade_evidence, rules_version)
+
+    async def stale_row(self):
+        """Строка, оценённая старыми правилами; переоценивается в первом раунде."""
+        return await self._call("stale_row")
 
     async def make_ready(self, job_id, letter, reason):
         return await self._call("make_ready", job_id, letter, reason)
@@ -213,15 +223,41 @@ class AsyncStore:
                                  (dump(vacancy.to_dict()), now(), source + ":" + str(vacancy.id)))
         await self._conn.commit()
 
-    async def _op_decide(self, job_id, status, reason):
+    async def _op_decide(self, job_id, status, reason, grade, grade_evidence, rules_version):
         from .store import STATES, TERMINAL
         if status not in STATES:
             raise ValueError("Неизвестный статус")
         placeholders = ",".join("?" for _ in TERMINAL)
         await self._conn.execute(
-            "UPDATE jobs SET status=?,reason=?,updated=? WHERE id=? AND status NOT IN (" + placeholders + ")",
-            (status, reason, now(), Store.key(job_id), *TERMINAL))
+            "UPDATE jobs SET status=?,reason=?,grade=?,grade_evidence=?,rules_version=?,updated=?"
+            " WHERE id=? AND status NOT IN (" + placeholders + ")",
+            (status, reason, grade, grade_evidence, rules_version, now(), Store.key(job_id), *TERMINAL))
         await self._conn.commit()
+
+    async def _op_reassess(self, job_id, status, reason, letter, grade, grade_evidence, rules_version):
+        from .store import STATES
+        if status not in STATES:
+            raise ValueError("Неизвестный статус")
+        await self._conn.execute(
+            "UPDATE jobs SET status=?,reason=?,letter=?,grade=?,grade_evidence=?,rules_version=?,updated=?"
+            " WHERE id=? AND status IN ('ready','rejected','needs_clarification')",
+            (status, reason, dump(letter.to_dict()) if letter is not None else None,
+             grade, grade_evidence, rules_version, now(), Store.key(job_id)))
+        await self._conn.commit()
+
+    async def _op_stale_row(self):
+        cursor = await self._conn.execute(
+            "SELECT value FROM settings WHERE key='rules_version'")
+        row = await cursor.fetchone()
+        await cursor.close()
+        current = json.loads(row[0]) if row else None
+        cursor = await self._conn.execute(
+            "SELECT id FROM jobs WHERE status IN ('ready','rejected','needs_clarification')"
+            " AND (rules_version IS NULL OR rules_version != ?)"
+            " ORDER BY created,id LIMIT 1", (current,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        return row[0] if row else None
 
     async def _op_make_ready(self, job_id, letter, reason):
         await self._conn.execute(

@@ -21,10 +21,17 @@ class ConfigTests(unittest.TestCase):
         config = self.load()
         self.assertEqual(config.owner_id, 0)
         self.assertEqual(config.sources, ('hh',))
+        self.assertEqual([profile.name for profile in config.profiles], ['ru', 'intl'])
         self.assertEqual(config.max_search_pages, 100)
         self.assertEqual(config.db_path, self.root / '.state' / 'agent.sqlite3')
         self.assertEqual(config.api_token_path, self.root / '.state' / 'api-token.json')
         self.assertFalse(config.state_dir.exists())
+
+    def test_profiles_are_selectable_and_validated(self):
+        config = self.load(PROFILES='intl')
+        self.assertEqual([profile.name for profile in config.profiles], ['intl'])
+        with self.assertRaises(ValueError):
+            self.load(PROFILES='nope')
 
     def test_dotenv_is_root_scoped_and_environment_wins(self):
         (self.root / '.env').write_text('TELEGRAM_OWNER_ID=123\nSOURCES=hh,fake\nMAX_SEARCH_PAGES=20\n')
