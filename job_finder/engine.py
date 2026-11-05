@@ -8,6 +8,8 @@
 import asyncio
 import time
 from datetime import datetime, timezone
+from .dedupe import (EmbeddingClient, content_hash, embedding_input,
+                     extract_links, normalize_company, normalize_title)
 from .models import AttentionRequired, RateLimited, VacancyUnavailable
 from .rules import evaluate_all
 from .store import Store
@@ -23,11 +25,12 @@ def utc_now():
 
 
 class Engine:
-    def __init__(self, config, store, adapters, writer):
+    def __init__(self, config, store, adapters, writer, embeddings=None):
         self.config=config
         self.store=store
         self.adapters=adapters
         self.writer=writer
+        self.embeddings = embeddings if embeddings is not None else EmbeddingClient(config)
 
     async def start(self):
         # Прерванный active-раунд доигрывается идемпотентно (R5);
@@ -122,7 +125,39 @@ class Engine:
             return
         try:
             vacancy=await adapter.fetch(Store.native(job_id))
-            await self.store.refresh(source, vacancy)
+            norm_company = normalize_company(vacancy.company)
+            norm_title = normalize_title(vacancy.title)
+            hash_value = content_hash(vacancy)
+            await self.store.refresh(source, vacancy,
+                                     norm_company=norm_company,
+                                     norm_title=norm_title,
+                                     content_hash_value=hash_value)
+            # Дедупликация (раздел 8): точный ключ и прямые ссылки — кандидаты,
+            # сливает прямая ссылка или точный ключ, подтверждённый эмбеддингом.
+            exact = await self.store.exact_candidates(job_id, norm_company, norm_title)
+            links = await self.store.link_candidates(extract_links(vacancy))
+            candidates = set(exact) | set(links)
+            if candidates and await self.store.skipped_cluster(candidates):
+                await self.store.decide(job_id, "skipped", "Пропущен кластер (ранее /skip)")
+                return
+            topk = []
+            if not links and self.embeddings.available:
+                try:
+                    vector, dim, model = await self.embeddings.embed(embedding_input(vacancy))
+                    topk = await self.store.embedding_candidates(job_id, vector, model, dim, hash_value)
+                except RuntimeError:
+                    pass  # сбой эмбеддингов не блокирует конвейер
+            if topk and await self.store.skipped_cluster(topk):
+                await self.store.decide(job_id, "skipped", "Пропущен кластер (ранее /skip)")
+                return
+            if links:
+                await self.store.join_cluster(job_id, sorted(links))
+            elif exact and [candidate for candidate in exact if candidate in topk]:
+                await self.store.join_cluster(job_id, [candidate for candidate in exact if candidate in topk])
+            else:
+                possible = sorted(candidates | set(topk))
+                if possible:
+                    await self.store.mark_possible_duplicates(job_id, possible)
             assessment=evaluate_all(vacancy, self.config.profiles)
             reason=assessment.reason
             if vacancy.test_required and assessment.status in ("ready","needs_clarification"):
@@ -158,7 +193,10 @@ class Engine:
         try:
             vacancy=await adapter.fetch(Store.native(job_id))
             source = str(job_id).split(":", 1)[0]
-            await self.store.refresh(source, vacancy)
+            await self.store.refresh(source, vacancy,
+                                     norm_company=normalize_company(vacancy.company),
+                                     norm_title=normalize_title(vacancy.title),
+                                     content_hash_value=content_hash(vacancy))
             assessment=evaluate_all(vacancy, self.config.profiles)
             reason=assessment.reason
             if vacancy.test_required and assessment.status in ("ready","needs_clarification"):

@@ -164,7 +164,7 @@ def migrate(conn):
             "source": "TEXT NOT NULL DEFAULT 'hh'",
             "native_id": "TEXT",
             "published_at": "TEXT",
-            "cluster_id": "TEXT",
+            "cluster_id": "INTEGER",
             "last_seen": "TEXT",
             "last_read": "TEXT",
             "norm_company": "TEXT",

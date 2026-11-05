@@ -19,7 +19,7 @@ CREATE TABLE jobs (
   reason TEXT NOT NULL DEFAULT '', letter TEXT,
   created TEXT NOT NULL, updated TEXT NOT NULL,
   source TEXT NOT NULL DEFAULT 'hh', native_id TEXT, published_at TEXT,
-  cluster_id TEXT, last_seen TEXT, last_read TEXT,
+  cluster_id INTEGER, last_seen TEXT, last_read TEXT,
   norm_company TEXT, norm_title TEXT, content_hash TEXT,
   test_required INTEGER NOT NULL DEFAULT 0,
   grade TEXT, grade_evidence TEXT, skills TEXT,
@@ -136,7 +136,9 @@ class Store:
         if row is None:
             return None
         row = dict(row)
-        row["vacancy"] = Vacancy.from_dict(json.loads(row.pop("data")))
+        data = json.loads(row.pop("data"))
+        row["possible_duplicates"] = data.pop("possible_duplicates", None)
+        row["vacancy"] = Vacancy.from_dict(data)
         row["letter"] = Letter(**json.loads(row["letter"])) if row["letter"] else None
         return row
 

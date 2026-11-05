@@ -14,11 +14,12 @@
 import asyncio
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import aiosqlite
 
+from .dedupe import DEDUP_COSINE_THRESHOLD, EMBEDDING_K, cosine
 from .models import Letter, Vacancy
 from .store import Store, dump, now
 
@@ -103,8 +104,35 @@ class AsyncStore:
     async def discover(self, source, vacancy):
         return await self._call("discover", source, vacancy)
 
-    async def refresh(self, source, vacancy):
-        return await self._call("refresh", source, vacancy)
+    async def refresh(self, source, vacancy, norm_company=None, norm_title=None, content_hash_value=None):
+        return await self._call("refresh", source, vacancy, norm_company, norm_title, content_hash_value)
+
+    async def exact_candidates(self, job_id, norm_company, norm_title):
+        """Кандидаты точного ключа (не слияние сами по себе, раздел 8)."""
+        return await self._call("exact_candidates", job_id, norm_company, norm_title)
+
+    async def link_candidates(self, links):
+        """Прямые ссылки hh/Habr в тексте — жёсткое доказательство тождества."""
+        return await self._call("link_candidates", links)
+
+    async def join_cluster(self, job_id, candidates):
+        """Кластер: создать или присоединить; представитель — hh при наличии."""
+        return await self._call("join_cluster", job_id, candidates)
+
+    async def skipped_cluster(self, candidates):
+        """Есть ли среди кандидатов строка пропущенного кластера (16.3)."""
+        return await self._call("skipped_cluster", candidates)
+
+    async def embedding_candidates(self, job_id, vector, model, dim, content_hash_value):
+        """Сохраняет вектор строки и возвращает top-K «возможно, дубль»."""
+        return await self._call("embedding_candidates", job_id, vector, model, dim, content_hash_value)
+
+    async def mark_possible_duplicates(self, job_id, ids):
+        return await self._call("mark_possible_duplicates", job_id, ids)
+
+    async def cluster_skip(self, job_id):
+        """Пропуск всего кластера (для /skip, 16.3): статус clusters + все строки."""
+        return await self._call("cluster_skip", job_id)
 
     async def decide(self, job_id, status, reason, grade=None, grade_evidence=None, rules_version=None):
         return await self._call("decide", job_id, status, reason, grade, grade_evidence, rules_version)
@@ -205,7 +233,9 @@ class AsyncStore:
         if row is None:
             return None
         row = _as_dict(row)
-        row["vacancy"] = Vacancy.from_dict(json.loads(row.pop("data")))
+        data = json.loads(row.pop("data"))
+        row["possible_duplicates"] = data.pop("possible_duplicates", None)
+        row["vacancy"] = Vacancy.from_dict(data)
         row["letter"] = Letter(**json.loads(row["letter"])) if row["letter"] else None
         return row
 
@@ -218,9 +248,25 @@ class AsyncStore:
         await self._conn.commit()
         return result
 
-    async def _op_refresh(self, source, vacancy):
-        await self._conn.execute("UPDATE jobs SET data=?,updated=? WHERE id=?",
-                                 (dump(vacancy.to_dict()), now(), source + ":" + str(vacancy.id)))
+    async def _op_refresh(self, source, vacancy, norm_company, norm_title, content_hash_value):
+        key = source + ":" + str(vacancy.id)
+        cursor = await self._conn.execute("SELECT content_hash FROM jobs WHERE id=?", (key,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        previous_hash = row[0] if row else None
+        await self._conn.execute(
+            "UPDATE jobs SET data=?,norm_company=?,norm_title=?,updated=? WHERE id=?",
+            (dump(vacancy.to_dict()), norm_company, norm_title, now(), key))
+        if content_hash_value is not None:
+            if previous_hash is not None and previous_hash != content_hash_value:
+                # Данные изменились → переоценка не-терминальной строки (16.2).
+                await self._conn.execute(
+                    "UPDATE jobs SET content_hash=?,rules_version=NULL WHERE id=?"
+                    " AND status NOT IN ('skipped','closed','found','error')",
+                    (content_hash_value, key))
+            else:
+                await self._conn.execute("UPDATE jobs SET content_hash=? WHERE id=?",
+                                         (content_hash_value, key))
         await self._conn.commit()
 
     async def _op_decide(self, job_id, status, reason, grade, grade_evidence, rules_version):
@@ -462,17 +508,142 @@ class AsyncStore:
             "UPDATE round_requests SET state='queued',updated=? WHERE state='active'", (now(),))
         await self._conn.commit()
 
+    # ---------- дедупликация (раздел 8) ----------
+
+    async def _op_exact_candidates(self, job_id, norm_company, norm_title):
+        key = Store.key(job_id)
+        if not norm_company or not norm_title:
+            return []
+        cursor = await self._conn.execute(
+            "SELECT id FROM jobs WHERE norm_company=? AND norm_title=? AND id != ? ORDER BY id",
+            (norm_company, norm_title, key))
+        ids = [row[0] for row in await cursor.fetchall()]
+        await cursor.close()
+        return ids
+
+    async def _op_link_candidates(self, links):
+        ids = []
+        for source, native_id in links:
+            cursor = await self._conn.execute("SELECT id FROM jobs WHERE id=?",
+                                              (source + ":" + str(native_id),))
+            row = await cursor.fetchone()
+            await cursor.close()
+            if row:
+                ids.append(row[0])
+        return ids
+
+    async def _op_join_cluster(self, job_id, candidates):
+        key = Store.key(job_id)
+        candidates = [candidate for candidate in candidates if candidate != key]
+        cluster_id = None
+        for candidate in candidates:
+            cursor = await self._conn.execute("SELECT cluster_id FROM jobs WHERE id=?", (candidate,))
+            row = await cursor.fetchone()
+            await cursor.close()
+            if row and row[0] is not None:
+                cluster_id = row[0]
+                break
+        if cluster_id is None:
+            rep = sorted([key] + candidates,
+                         key=lambda candidate: (0 if candidate.startswith("hh:") else 1, candidate))[0]
+            cursor = await self._conn.execute(
+                "INSERT INTO clusters(rep_job_id,created,status) VALUES(?,?,'none')", (rep, now()))
+            cluster_id = cursor.lastrowid
+            await cursor.close()
+        await self._conn.execute("UPDATE jobs SET cluster_id=? WHERE id=?", (cluster_id, key))
+        for candidate in candidates:
+            await self._conn.execute(
+                "UPDATE jobs SET cluster_id=? WHERE id=? AND cluster_id IS NULL",
+                (cluster_id, candidate))
+        if key.startswith("hh:"):
+            # Представитель — hh при наличии (16.3).
+            await self._conn.execute(
+                "UPDATE clusters SET rep_job_id=? WHERE id=? AND rep_job_id NOT LIKE 'hh:%'",
+                (key, cluster_id))
+        await self._conn.commit()
+        return {"kind": "merged", "cluster_id": cluster_id}
+
+    async def _op_skipped_cluster(self, candidates):
+        for candidate in candidates:
+            cursor = await self._conn.execute(
+                "SELECT j.cluster_id,c.status FROM jobs j LEFT JOIN clusters c ON c.id=j.cluster_id"
+                " WHERE j.id=?", (candidate,))
+            row = await cursor.fetchone()
+            await cursor.close()
+            if row and row[0] is not None and row[1] == "skipped":
+                return True
+        return False
+
+    async def _op_embedding_candidates(self, job_id, vector, model, dim, content_hash_value):
+        key = Store.key(job_id)
+        blob = json.dumps(vector).encode("utf-8")
+        await self._conn.execute(
+            "INSERT INTO job_embeddings(job_id,embedding,model,dim,content_hash) VALUES(?,?,?,?,?)"
+            " ON CONFLICT(job_id) DO UPDATE SET embedding=excluded.embedding,"
+            " model=excluded.model,dim=excluded.dim,content_hash=excluded.content_hash",
+            (key, blob, model, dim, content_hash_value))
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        cursor = await self._conn.execute(
+            "SELECT e.job_id,e.embedding FROM job_embeddings e JOIN jobs j ON j.id=e.job_id"
+            " WHERE e.job_id != ? AND e.dim=? AND j.status NOT IN ('skipped','closed')"
+            " AND j.created >= ?", (key, dim, cutoff))
+        rows = await cursor.fetchall()
+        await cursor.close()
+        scored = []
+        for candidate_id, embedding_blob in rows:
+            try:
+                other = json.loads(bytes(embedding_blob).decode("utf-8"))
+            except (ValueError, UnicodeDecodeError):
+                continue
+            score = cosine(vector, other)
+            if score >= DEDUP_COSINE_THRESHOLD:
+                scored.append((score, candidate_id))
+        scored.sort(reverse=True)
+        await self._conn.commit()
+        return [candidate_id for _, candidate_id in scored[:EMBEDDING_K]]
+
+    async def _op_mark_possible_duplicates(self, job_id, ids):
+        key = Store.key(job_id)
+        cursor = await self._conn.execute("SELECT data FROM jobs WHERE id=?", (key,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        if row is None:
+            return
+        data = json.loads(row[0])
+        data["possible_duplicates"] = list(ids)
+        await self._conn.execute("UPDATE jobs SET data=? WHERE id=?",
+                                 (json.dumps(data, ensure_ascii=False), key))
+        await self._conn.commit()
+
+    async def _op_cluster_skip(self, job_id):
+        key = Store.key(job_id)
+        cursor = await self._conn.execute("SELECT cluster_id FROM jobs WHERE id=?", (key,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        if row is None or row[0] is None:
+            return False
+        cluster_id = row[0]
+        await self._conn.execute("UPDATE clusters SET status='skipped',skipped_at=? WHERE id=?", (now(), cluster_id))
+        await self._conn.execute(
+            "UPDATE jobs SET status='skipped',reason='Пропущен кластер (вручную)',updated=?"
+            " WHERE cluster_id=? AND status NOT IN ('skipped','closed')", (now(), cluster_id))
+        await self._conn.commit()
+        return True
+
     async def _op_round_commit(self, source, t_start, report):
         """Атомарный коммит источника (R5): строки + отчёт + last_search."""
         await self._conn.execute("BEGIN IMMEDIATE")
         try:
             for hit in report.hits:
                 native_id = str(hit.native_id)
+                key = source + ":" + native_id
                 placeholder = {"id": native_id, "title": "Вакансия ещё не прочитана", "description": ""}
                 await self._conn.execute(
                     "INSERT OR IGNORE INTO jobs(id,data,status,created,updated)"
                     " VALUES(?,?,'found',?,?)",
-                    (source + ":" + native_id, dump(placeholder), now(), now()))
+                    (key, dump(placeholder), now(), now()))
+                # У известного поста — только last_seen (16.1).
+                await self._conn.execute("UPDATE jobs SET last_seen=? WHERE id=?", (t_start, key))
             summary = {"ids": [str(hit.native_id) for hit in report.hits],
                        "incomplete": report.incomplete, "notes": list(report.notes)}
             await self._conn.execute(
