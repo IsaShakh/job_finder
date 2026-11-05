@@ -139,7 +139,7 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
             await Telegram(self.config, self.store, http_client=client).poll_once()
         self.assertTrue(self.store.is_paused())
         self.assertEqual(len(self.store.pending_messages()), 1)
-        self.assertIn('Пауза отправок', self.store.pending_messages()[0]['text'])
+        self.assertIn('Пауза доставки', self.store.pending_messages()[0]['text'])
         self.assertNotIn('private-token', self.store.pending_messages()[0]['text'])
         self.assertEqual(self.store.setting('telegram_offset'), 3)
         self.assertIsNone(self.store.setting('telegram_next_poll'))
@@ -233,7 +233,7 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
         self.updates = [message(1, '/status')]
         await self.telegram.poll_once()
         response = self.store.pending_messages()[0]['text']
-        self.assertIn('только успешные отклики', response)
+        self.assertIn('автоотклик удалён', response)
         self.assertIn('Нужно заново войти в HH', response)
         self.assertIn('Страниц: 3', response)
         self.assertIn('Вакансий: 2', response)
@@ -244,42 +244,54 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
         self.store.set('browser_blocked', False)
         self.assertNotIn('Нужно заново войти в HH', self.telegram._response('/status')[1])
 
-    async def test_status_explains_unknown_send_guard_while_search_keeps_working(self):
+    async def test_status_explains_delivery_pause_and_attention_block(self):
         self.store.discover(Vacancy('42', 'Python', 'Python'))
-        self.store.decide('42', 'unknown', 'Результат отправки неизвестен')
         before = self.store.get('42')
         self.updates = [message(1, '/status')]
         await self.telegram.poll_once()
         response = self.store.pending_messages()[0]['text']
         self.assertIn('Скрипт работает', response)
-        self.assertIn('проверки предыдущего результата', response)
-        self.assertIn('Поиск вакансий продолжается', response)
+        self.assertIn('Пауза доставки: да', response)
+        self.assertIn('Доставка уведомлений приостановлена', response)
         self.assertEqual(self.store.get('42'), before)
         self.assertTrue(self.store.is_paused())
         self.store.set('browser_blocked', True)
+        self.store.set('attention_reason', 'Нужно заново войти в HH')
         blocked = self.telegram._response('/status')[1]
-        self.assertNotIn('Поиск вакансий продолжается', blocked)
+        self.assertIn('Нужно заново войти в HH', blocked)
         self.assertIn('доступ', blocked.lower())
 
-    async def test_delivery_only_sends_success_and_requested_clarifications(self):
+    async def test_delivery_only_sends_replies_and_legacy_success(self):
         self.store.enqueue('Автоматическое событие — не отправлять')
-        self.store.discover(Vacancy('42', 'Успешная вакансия', 'Python'))
-        self.store.finish('42', 'sent', evidence='Подтверждение HH',
-                          notification='Отклик успешно отправлен')
+        self.store.enqueue('Ответ по запросу', kind='reply')
+        self.store.enqueue('Legacy подтверждение отклика', kind='success')
+        self.store.pause(False)
         self.store.discover(Vacancy('43', 'Уточнить формат работы', 'Python'))
         self.store.decide('43', 'needs_clarification', 'Не подтверждена удалённая работа')
         self.updates = [message(1, '/clarifications')]
         await self.telegram.poll_once()
-        for _ in range(3):
+        for _ in range(4):
             self.store.set('telegram_next_delivery', 0)
             await self.telegram.flush()
         sent = [data['text'] for method, data in self.requests if method == 'sendMessage']
-        self.assertEqual(len(sent), 2)
-        self.assertEqual(sent[0], 'Отклик успешно отправлен')
-        self.assertIn('Уточнить формат работы', sent[1])
+        self.assertEqual(len(sent), 3)
+        self.assertEqual(sent[0], 'Ответ по запросу')
+        self.assertEqual(sent[1], 'Legacy подтверждение отклика')
+        self.assertIn('Уточнить формат работы', sent[2])
         self.assertNotIn('Автоматическое событие', '\n'.join(sent))
         self.assertTrue(all(data['chat_id'] == 123 and 'reply_markup' not in data
                             for method, data in self.requests if method == 'sendMessage'))
+
+    async def test_delivery_pause_holds_messages_in_outbox(self):
+        self.store.enqueue('Сообщение на паузе', kind='reply')
+        await self.telegram.flush()
+        self.assertFalse(any(method == 'sendMessage' for method, _ in self.requests))
+        self.assertEqual(len(self.store.pending_messages()), 1)
+        self.store.pause(False)
+        self.store.set('telegram_next_delivery', 0)
+        await self.telegram.flush()
+        self.assertTrue(any(method == 'sendMessage' for method, _ in self.requests))
+        self.assertEqual(self.store.pending_messages(), [])
 
     async def test_all_retired_commands_leave_work_state_and_jobs_unchanged(self):
         self.store.discover(Vacancy('42', 'Python', 'Python'))
@@ -318,6 +330,7 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
     async def test_delivery_splits_unicode_persists_chunk_progress_and_rate_limits(self):
         text = '🙂' * 3000 + '\n' + 'я' * 3000
         self.store.enqueue(text, kind='reply')
+        self.store.pause(False)
         self.send_results = [httpx.Response(200, json={'ok': True, 'result': {'message_id': 1}}),
                              httpx.Response(503, json={'ok': False, 'description': 'secret-url'})]
         with patch('job_finder.telegram.time.time', return_value=1000):
@@ -355,6 +368,7 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_delivery_429_retries_same_chunk_after_delay(self):
         self.store.enqueue('Unsent letter', kind='reply')
+        self.store.pause(False)
         self.send_results = [httpx.Response(200, json={'ok': False, 'error_code': 429,
             'parameters': {'retry_after': 10}})]
         with patch('job_finder.telegram.time.time', return_value=1000):

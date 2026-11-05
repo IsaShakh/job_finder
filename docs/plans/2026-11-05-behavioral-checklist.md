@@ -128,3 +128,13 @@
 | `telegram.py` | `STATUS_LABELS` с `sending`/`sent`/`unknown` | `read`/`delivered`/`skipped` |
 
 **Критерий выхода этапа 0:** зелёный прогон тестов (156/156 на 05.11.2026), ветка `feature/multiplatform` создана от checkpoint `0b42719`, чек-лист зафиксирован в этом файле.
+
+## 12. Выполнение этапа 1b (05.11.2026)
+
+После удаления автоотклика:
+
+- Удалены: `job_finder/browser.py` целиком (поиск/чтение/apply/reconcile/тесты/подтверждения), `hh.HHClient.apply/reconcile/_negotiation_ids/_confirm/_describe_error`, `store.claim/finish/recover`, таблица `attempts` в схеме новых БД, `models.Outcome`, `Vacancy.already_applied`, `config.live/headless/resume_id/send_interval` (+ `HH_LIVE`/`HH_HEADLESS`/`HH_RESUME_ID`/`SEND_INTERVAL`), команда CLI `login`, Playwright из зависимостей, пункт «Войти в HH в браузере» в `setup.command`.
+- Пауза → **пауза доставки**: `paused` больше не влияет на подготовку/поиск, `Telegram.flush` не отправляет сообщения, пока включена (`/status` показывает «Пауза доставки»).
+- Правило тестов → **метка**: `evaluate` не отклоняет за тест; движок дописывает метку «Тест: потребуется пройти при отклике» в `reason` для `ready`/`needs_clarification`; `Vacancy.test_required` сохраняется в данных для карточки.
+- Запуск: только API HH (`api-login` обязателен для `run`/`search`); статусы/данные старых откликов остаются в БД до миграции 1c.
+- Тесты: 156 → **105** зелёных (браузерные и отправные удалены/переписаны, добавлены тесты метки теста, паузы доставки, отсутствия attempts/apply).

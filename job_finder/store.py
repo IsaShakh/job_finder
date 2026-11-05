@@ -33,9 +33,6 @@ class Store:
           id TEXT PRIMARY KEY, data TEXT NOT NULL, status TEXT NOT NULL,
           reason TEXT NOT NULL DEFAULT '', letter TEXT, resume_id TEXT,
           evidence TEXT NOT NULL DEFAULT '', created TEXT NOT NULL, updated TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS attempts (
-          id INTEGER PRIMARY KEY, job_id TEXT NOT NULL, started TEXT NOT NULL,
-          ended TEXT, status TEXT NOT NULL, evidence TEXT);
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS inbox (update_id INTEGER PRIMARY KEY, command TEXT, created TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS outbox (id INTEGER PRIMARY KEY, text TEXT NOT NULL, sent INTEGER NOT NULL DEFAULT 0, created TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'event');
@@ -102,41 +99,11 @@ class Store:
             self._set(key,value)
 
     def pause(self, paused=True):
+        """Пауза доставки: пока включена, уведомления не отправляются в Telegram."""
         self.set("paused",paused)
 
     def is_paused(self):
         return self.setting("paused",True)
-
-    def claim(self, job_id, resume_id):
-        with self.conn:
-            self.conn.execute("BEGIN IMMEDIATE")
-            if self.is_paused():
-                return False
-            cursor=self.conn.execute("UPDATE jobs SET status='sending',resume_id=?,updated=? WHERE id=? AND status='ready' AND letter IS NOT NULL",(resume_id,now(),job_id))
-            if cursor.rowcount:
-                self.conn.execute("INSERT INTO attempts(job_id,started,status) VALUES(?,?,'sending')",(job_id,now()))
-            return bool(cursor.rowcount)
-
-    def finish(self, job_id, status, evidence="", reason="", notification=None):
-        if status not in STATES or (status == "sent" and not evidence.strip()):
-            raise ValueError("Успешному отклику нужно подтверждение HH")
-        with self.conn:
-            row=self.conn.execute("SELECT status,reason FROM jobs WHERE id=?",(job_id,)).fetchone()
-            if not row or row[0] == "sent":
-                return
-            if row[0] in ("sending","unknown") and status not in ("sent","unknown"):
-                status,reason="unknown","Отправка начата; нужно проверить историю"
-            self.conn.execute("UPDATE jobs SET status=?,evidence=?,reason=?,updated=? WHERE id=?",(status,evidence,reason,now(),job_id))
-            self.conn.execute("UPDATE attempts SET status=?,evidence=?,ended=? WHERE job_id=? AND status='sending'",(status,evidence,now(),job_id))
-            self._record_skip(job_id,status,reason,row)
-            if notification:
-                self._enqueue(notification,kind="success" if status=="sent" else "event")
-
-    def recover(self):
-        with self.conn:
-            self.conn.execute("UPDATE jobs SET status='unknown',reason='Прерванная отправка: сначала проверить историю',updated=? WHERE status='sending'",(now(),))
-            self.conn.execute("UPDATE attempts SET status='unknown',ended=? WHERE status='sending'",(now(),))
-            self.conn.execute("UPDATE jobs SET status='found',reason='Подготовка письма была прервана',updated=? WHERE status='ready' AND letter IS NULL",(now(),))
 
     def _record_skip(self, job_id, status, reason, previous):
         if status=='rejected' and 'предложено пройти тест' in reason and (not previous or previous[0]!='rejected' or previous[1]!=reason):

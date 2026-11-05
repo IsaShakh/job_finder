@@ -47,7 +47,7 @@ def initialize(root):
     path=root/".env"
     if not path.exists():
         example=Path(__file__).resolve().parents[1]/".env.example"
-        content=example.read_text(encoding="utf-8") if example.exists() else "HH_LIVE=false\n"
+        content=example.read_text(encoding="utf-8") if example.exists() else "TELEGRAM_BOT_TOKEN=\n"
         fd=os.open(str(path),os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
         with os.fdopen(fd,"w",encoding="utf-8") as target:
             target.write(content)
@@ -135,11 +135,8 @@ async def pair(config):
 def doctor(config):
     checks=[("Токен Telegram",bool(config.telegram_token)),("Владелец Telegram",config.owner_id>0),
             ("Ключ и модель для писем",bool(config.llm_api_key and config.llm_model)),
-            ("Профиль браузера создан (вход проверяется отдельно)",config.profile_dir.exists()),
-            ("Токен API HH (вход через api-login)",config.api_token_path.exists()),
-            ("Локальный Chromium",bool(list((config.root/".cache/ms-playwright").glob("chromium-*"))))]
-    print("Режим: "+("отправка включена; состояние паузы хранится отдельно" if config.live else "просмотр, без отправки"))
-    print("Источник вакансий: "+("API HH (без браузера)" if config.api_token_path.exists() else "браузер (войдите через api-login для API)"))
+            ("Токен API HH (вход через api-login)",config.api_token_path.exists())]
+    print("Источник вакансий: API HH (без браузера)")
     for label,ok in checks:
         print(("✓ " if ok else "○ ")+label)
     print("Проверка локальная: токены и вход на сайте пока не проверялись по сети.")
@@ -197,7 +194,7 @@ async def run_worker(config, store, source, label):
     bot=Telegram(config,store)
     polling,delivery=telegram_tasks(bot)
     print("Скрипт запущен: поиск начнётся автоматически. Остановка здесь: Ctrl+C.")
-    print("Источник вакансий: "+label+". Режим: "+("реальные отклики" if config.live else "просмотр, без отправки")+". Telegram показывает результаты; /status — состояние.")
+    print("Источник вакансий: "+label+". Telegram показывает результаты; /status — состояние.")
     tasks=[asyncio.create_task(engine.run()),asyncio.create_task(polling()),asyncio.create_task(delivery())]
     try:
         await asyncio.gather(*tasks)
@@ -207,64 +204,34 @@ async def run_worker(config, store, source, label):
         await asyncio.gather(*tasks,return_exceptions=True)
 
 
-async def browser_command(config, command):
+async def api_command(config, command):
     from .engine import Engine
     from .letters import LetterGenerator
     if command=="run" and (not config.telegram_token or config.owner_id<=0):
         raise ValueError("Сначала настройте Telegram: configure, затем pair")
-    if command=="run" and config.live and not (config.llm_api_key and config.llm_model):
-        raise ValueError("Для отправки настройте API-ключ и модель; просмотр работает без них")
     store=Store(config.db_path)
-    store.recover()
     try:
-        if command in ("run","search") and config.api_token_path.exists():
-            from .hh import HHClient
-            source=HHClient(config)
-            try:
-                if command=="search":
-                    engine=Engine(config,store,source,LetterGenerator(config))
-                    await engine.search()
-                    print("Поиск закончен (API HH). Найденные вакансии сохранены; отправки не выполнялись.")
-                    return
-                await run_worker(config,store,source,"API HH (без браузера)")
-            finally:
-                await source.close()
-            return
-        from playwright.async_api import async_playwright
-        from .browser import Browser
-        os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH",str(config.root/".cache/ms-playwright"))
-        config.profile_dir.mkdir(parents=True,exist_ok=True)
-        os.chmod(config.profile_dir,0o700)
-        async with async_playwright() as pw:
-            context=await pw.chromium.launch_persistent_context(str(config.profile_dir),headless=False if command=="login" else config.headless,locale="ru-RU",viewport={"width":1280,"height":900})
-            try:
-                page=context.pages[0] if context.pages else await context.new_page()
-                browser=Browser(page,config.resume_id)
-                if command=="login":
-                    await browser.goto("https://hh.ru/")
-                    print("Войдите в HH в открывшемся окне. Пароль и код вводите только на сайте.")
-                    await asyncio.to_thread(input,"После входа нажмите Enter здесь: ")
-                    await browser.goto("https://hh.ru/resume/"+config.resume_id)
-                    await browser.check_access(require_auth=True)
-                    store.set("browser_blocked",False)
-                    print("Вход подтверждён. Сессия сохранена в отдельном профиле.")
-                    return
-                engine=Engine(config,store,browser,LetterGenerator(config))
-                if command=="search":
-                    await engine.search()
-                    print("Поиск закончен (браузер). Найденные вакансии сохранены; отправки не выполнялись.")
-                    return
-                await run_worker(config,store,browser,"браузер")
-            finally:
-                await context.close()
+        if not config.api_token_path.exists():
+            raise ValueError("Сначала выполните вход в API HH: python -m job_finder api-login")
+        from .hh import HHClient
+        source=HHClient(config)
+        try:
+            engine=Engine(config,store,source,LetterGenerator(config))
+            if command=="search":
+                await engine.search()
+                print("Поиск закончен (API HH). Найденные вакансии сохранены.")
+                return
+            await run_worker(config,store,source,"API HH")
+        finally:
+            await source.close()
     finally:
         store.close()
 
 
 def main(argv=None):
-    parser=argparse.ArgumentParser(description="Личный агент hh.ru с отчётами в Telegram")
+    parser=argparse.ArgumentParser(description="Личный агент поиска вакансий hh.ru с отчётами в Telegram")
     parser.add_argument("--root",type=Path,default=Path.cwd(),help="Папка проекта и его локальных настроек")
-    parser.add_argument("command",choices=["init","configure","pair","doctor","login","api-login","search","run","status"])
+    parser.add_argument("command",choices=["init","configure","pair","doctor","api-login","search","run","status"])
     args=parser.parse_args(argv)
     root=args.root.resolve()
     try:
@@ -290,17 +257,17 @@ def main(argv=None):
             elif args.command=="api-login":
                 asyncio.run(api_login(config))
             else:
-                asyncio.run(browser_command(config,args.command))
+                asyncio.run(api_command(config,args.command))
         return 0
     except KeyboardInterrupt:
-        print("Агент остановлен. Незавершённая отправка будет проверена при следующем запуске.")
+        print("Агент остановлен. Поиск можно запустить снова командой run или search.")
         return 0
     except (ValueError,RuntimeError) as exc:
         print(str(exc),file=sys.stderr)
         return 1
     except Exception as exc:
-        # Do not render HTTP/browser exceptions: they may contain credentials
-        # or page text. State and attempt journal remain available for recovery.
+        # Do not render HTTP exceptions: they may contain credentials
+        # or page text. State remains available for recovery.
         print("Операция остановлена ("+type(exc).__name__+"). Проверьте настройки и вход в HH.",file=sys.stderr)
         return 1
 

@@ -21,7 +21,6 @@ class Vacancy:
     remote: Optional[bool] = None
     test_required: bool = False
     closed: bool = False
-    already_applied: bool = False
     requirements: str = ""
 
     @property
@@ -56,13 +55,6 @@ class Letter:
 
     def to_dict(self):
         return asdict(self)
-
-
-@dataclass(frozen=True)
-class Outcome:
-    status: str
-    evidence: str = ""
-    reason: str = ""
 
 
 class AttentionRequired(Exception):

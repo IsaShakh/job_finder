@@ -13,7 +13,7 @@ from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from job_finder.config import Config
 from job_finder.hh import (HHAPIError, HHClient, TokenStore, authorize,
                             trust_flags, vacancy_from_json)
-from job_finder.models import AttentionRequired, Letter, Vacancy
+from job_finder.models import Vacancy
 
 VACANCY_JSON = {
     "id": "123", "name": "Python Developer",
@@ -24,16 +24,6 @@ VACANCY_JSON = {
     "has_test": False, "archived": False, "type": {"id": "open"},
     "relations": [], "key_skills": [{"name": "Python"}, {"name": "FastAPI"}],
 }
-
-LETTER = Letter("Здравствуйте!\n\nЯ Python backend-разработчик.", ["python_backend"], [], [])
-
-
-async def allow():
-    return True
-
-
-async def deny():
-    return False
 
 
 def make_key():
@@ -126,11 +116,22 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(vacancy.remote)
         self.assertFalse(vacancy.test_required)
         self.assertFalse(vacancy.closed)
-        self.assertFalse(vacancy.already_applied)
-        with_relation = dict(VACANCY_JSON, relations=["got_rejection"])
-        self.assertTrue(vacancy_from_json(with_relation).already_applied)
         closed = dict(VACANCY_JSON, archived=True)
         self.assertTrue(vacancy_from_json(closed).closed)
+
+    def test_vacancy_conversion_has_no_apply_fields(self):
+        # Этап 1b: отклики удалены; relations больше не превращаются
+        # в признак «уже откликался».
+        with_relation = dict(VACANCY_JSON, relations=["got_rejection"])
+        vacancy = vacancy_from_json(with_relation)
+        self.assertFalse(hasattr(vacancy, "already_applied"))
+
+    async def test_client_has_no_apply_or_reconcile(self):
+        # Этап 1b: активный код откликов удалён из API-клиента.
+        client = self.client()
+        for name in ("apply", "reconcile", "_negotiation_ids", "_confirm", "_describe_error"):
+            self.assertFalse(hasattr(client, name))
+        await client.close()
 
     async def test_search_paginates_dedupes_and_reports(self):
         pages = {0: list(range(1, 101)), 1: list(range(101, 201)), 2: list(range(201, 251))}
@@ -175,85 +176,6 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(closed.closed)
         await client.close()
 
-    async def test_apply_respects_gate_and_sends_negotiation(self):
-        def negotiate(request):
-            data = parse_qs(request.content.decode())
-            self.assertEqual(data["vacancy_id"], ["123"])
-            self.assertEqual(data["resume_id"], [self.config.resume_id])
-            self.assertIn("message", data)
-            return httpx.Response(200, json={})
-        self.router.add("GET", "/vacancies/123", lambda request: httpx.Response(200, json=VACANCY_JSON))
-        self.router.add("POST", "/negotiations", negotiate)
-        self.router.add("GET", "/negotiations", lambda request: httpx.Response(
-            200, json={"items": [{"id": "N1", "vacancy": {"id": "123"}}], "pages": 1}))
-        client = self.client()
-        outcome = await client.apply(vacancy_from_json(VACANCY_JSON), LETTER, allow)
-        self.assertEqual(outcome.status, "sent")
-        self.assertIn("N1", outcome.evidence)
-        await client.close()
-
-    async def test_apply_does_not_send_when_gate_false(self):
-        self.router.add("GET", "/vacancies/123", lambda request: httpx.Response(200, json=VACANCY_JSON))
-        self.router.add("POST", "/negotiations", lambda request: self.fail("negotiation sent despite gate"))
-        client = self.client()
-        outcome = await client.apply(vacancy_from_json(VACANCY_JSON), LETTER, deny)
-        self.assertEqual(outcome.status, "ready")
-        await client.close()
-
-    async def test_apply_redirect_requires_clarification(self):
-        self.router.add("GET", "/vacancies/123", lambda request: httpx.Response(200, json=VACANCY_JSON))
-        self.router.add("POST", "/negotiations", lambda request: httpx.Response(
-            302, headers={"Location": "https://hh.ru/applicant/vacancy_response?vacancyId=123"}))
-        client = self.client()
-        outcome = await client.apply(vacancy_from_json(VACANCY_JSON), LETTER, allow)
-        self.assertEqual(outcome.status, "needs_clarification")
-        await client.close()
-
-    async def test_apply_limit_error(self):
-        self.router.add("GET", "/vacancies/123", lambda request: httpx.Response(200, json=VACANCY_JSON))
-        self.router.add("POST", "/negotiations", lambda request: httpx.Response(
-            200, json={"errors": [{"type": "negotiations-limit-exceeded"}]}))
-        client = self.client()
-        outcome = await client.apply(vacancy_from_json(VACANCY_JSON), LETTER, allow)
-        self.assertEqual(outcome.status, "error")
-        self.assertIn("лимит", outcome.reason)
-        await client.close()
-
-    async def test_apply_transport_error_after_claim_is_unknown(self):
-        self.router.add("GET", "/vacancies/123", lambda request: httpx.Response(200, json=VACANCY_JSON))
-        def boom(request):
-            raise httpx.ConnectError("connection lost", request=request)
-        self.router.add("POST", "/negotiations", boom)
-        client = self.client()
-        outcome = await client.apply(vacancy_from_json(VACANCY_JSON), LETTER, allow)
-        self.assertEqual(outcome.status, "unknown")
-        self.assertIn("Сбой API", outcome.reason)
-        await client.close()
-
-    async def test_apply_captcha_before_claim_stops_with_attention(self):
-        self.router.add("GET", "/vacancies/123", lambda request: httpx.Response(
-            403, json={"errors": [{"type": "captcha_required", "captcha_url": "https://hh.ru/captcha"}]}))
-        client = self.client()
-        called = False
-        async def gate():
-            nonlocal called
-            called = True
-            return True
-        with self.assertRaises(AttentionRequired):
-            await client.apply(vacancy_from_json(VACANCY_JSON), LETTER, gate)
-        self.assertFalse(called)
-        await client.close()
-
-    async def test_apply_captcha_after_claim_is_unknown(self):
-        self.router.add("GET", "/vacancies/123", lambda request: httpx.Response(200, json=VACANCY_JSON))
-        self.router.add("POST", "/negotiations", lambda request: httpx.Response(
-            403, json={"errors": [{"type": "captcha_required", "captcha_url": "https://hh.ru/captcha"}]}))
-        client = self.client()
-        outcome = await client.apply(vacancy_from_json(VACANCY_JSON), LETTER, allow)
-        self.assertEqual(outcome.status, "unknown")
-        self.assertIn("действие пользователя", outcome.reason)
-        await client.close()
-
     async def test_expired_token_refreshes_once(self):
         TokenStore(self.config.api_token_path).save(
             {"access_token": "USEROLD", "refresh_token": "REF1", "access_expires_at": 1})
@@ -269,21 +191,6 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(user["first_name"], "Иса")
         self.assertEqual(TokenStore(self.config.api_token_path).load()["access_token"], "USERNEW")
         await client.close()
-
-    async def test_reconcile_confirms_or_stays_unknown(self):
-        self.router.add("GET", "/negotiations", lambda request: httpx.Response(
-            200, json={"items": [{"id": "N1", "vacancy": {"id": "123"}}], "pages": 1}))
-        client = self.client()
-        outcome = await client.reconcile("123")
-        self.assertEqual(outcome.status, "sent")
-        await client.close()
-        empty = Router()
-        empty.add("GET", "/negotiations",
-                  lambda request: httpx.Response(200, json={"items": [], "pages": 1}))
-        client2 = HHClient(self.config, http_client=empty.client(), min_interval=0)
-        outcome = await client2.reconcile("123")
-        self.assertEqual(outcome.status, "unknown")
-        await client2.close()
 
     async def test_errors_are_sanitized(self):
         self.router.add("GET", "/me", lambda request: httpx.Response(

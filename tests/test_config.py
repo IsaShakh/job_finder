@@ -19,27 +19,23 @@ class ConfigTests(unittest.TestCase):
 
     def test_dry_defaults_do_not_create_state_or_require_secrets(self):
         config = self.load()
-        self.assertFalse(config.live)
-        self.assertFalse(config.headless)
         self.assertEqual(config.owner_id, 0)
         self.assertEqual(config.search_interval, 21600)
-        self.assertEqual(config.send_interval, 90)
         self.assertEqual(config.max_search_pages, 100)
-        self.assertEqual(config.resume_id, 'b424f687ff113123eb0039ed1f7a496e413267')
         self.assertEqual(config.db_path, self.root / '.state' / 'agent.sqlite3')
+        self.assertEqual(config.api_token_path, self.root / '.state' / 'api-token.json')
         self.assertFalse(config.state_dir.exists())
 
     def test_dotenv_is_root_scoped_and_environment_wins(self):
-        (self.root / '.env').write_text('TELEGRAM_OWNER_ID=123\nSEARCH_INTERVAL=600\nHH_HEADLESS=true\n')
+        (self.root / '.env').write_text('TELEGRAM_OWNER_ID=123\nSEARCH_INTERVAL=600\nMAX_SEARCH_PAGES=20\n')
         config = self.load(TELEGRAM_OWNER_ID='456')
         self.assertEqual(config.owner_id, 456)
         self.assertEqual(config.search_interval, 600)
-        self.assertTrue(config.headless)
+        self.assertEqual(config.max_search_pages, 20)
 
     def test_invalid_values_are_rejected_without_echoing_secrets(self):
         for env in ({'TELEGRAM_OWNER_ID': '-1'}, {'TELEGRAM_OWNER_ID': 'abc'},
-                    {'SEARCH_INTERVAL': '0'}, {'SEND_INTERVAL': '-1'},
-                    {'HH_LIVE': 'maybe'}, {'HH_RESUME_ID': 'other'},
+                    {'SEARCH_INTERVAL': '0'}, {'MAX_SEARCH_PAGES': '-1'},
                     {'LLM_BASE_URL': 'http://example.com/v1'},
                     {'LLM_BASE_URL': 'https://secret@example.com/v1'},
                     {'LLM_BASE_URL': 'https://example.com/v1?key=secret'}):

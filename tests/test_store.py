@@ -21,42 +21,27 @@ class PersistenceTests(unittest.TestCase):
         self.db.decide("123","ready","подходит")
         self.db.save_letter("123",Letter("Письмо",["fastapi"],[],[]))
 
-    def test_terminal_test_skip_survives_search(self):
+    def test_decided_row_survives_search(self):
         self.db.discover(vacancy())
-        self.db.decide("123","rejected","Пропущена: предложено пройти тест")
+        self.db.decide("123","rejected","Python не упомянут")
         self.assertFalse(self.db.discover(vacancy()))
         self.assertEqual(self.db.get("123")["status"],"rejected")
+        self.assertEqual(self.db.get("123")["reason"],"Python не упомянут")
 
-    def test_two_connections_cannot_claim_same_application(self):
-        self.ready()
+    def test_fresh_database_has_no_attempts_table(self):
+        # Этап 1b: активный код откликов и таблица attempts удалены;
+        # данные старых БД переносятся в архив в этапе 1c.
+        tables={row[0] for row in self.db.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertIn("jobs",tables)
+        self.assertIn("outbox",tables)
+        self.assertNotIn("attempts",tables)
+
+    def test_pause_is_a_delivery_pause_setting(self):
+        self.assertTrue(self.db.is_paused())
         self.db.pause(False)
-        other=Store(self.path)
-        try:
-            self.assertTrue(self.db.claim("123","resume123"))
-            self.assertFalse(other.claim("123","resume123"))
-        finally:
-            other.close()
-
-    def test_pause_blocks_submit(self):
-        self.ready()
-        self.assertFalse(self.db.claim("123","resume123"))
-        self.assertEqual(self.db.get("123")["status"],"ready")
-
-    def test_crash_recovery_never_requeues_send(self):
-        self.ready()
-        self.db.pause(False)
-        self.db.claim("123","resume123")
-        self.db.recover()
-        self.assertEqual(self.db.get("123")["status"],"unknown")
-        self.assertFalse(self.db.claim("123","resume123"))
-
-    def test_success_and_notification_are_atomic(self):
-        self.ready()
-        self.db.finish("123","sent","Вы откликнулись",notification="Успешно")
-        self.assertEqual(self.db.get("123")["status"],"sent")
-        self.assertEqual(self.db.pending_messages()[0]["text"],"Успешно")
-        self.assertEqual(self.db.pending_messages()[0]["kind"],"success")
-        self.assertFalse(self.db.discover(vacancy()))
+        self.assertFalse(self.db.is_paused())
+        self.db.pause(True)
+        self.assertTrue(self.db.is_paused())
 
     def test_generic_events_are_retained_without_proactive_delivery(self):
         self.db.enqueue("Нужно уточнение: Python разработчик")
@@ -67,23 +52,6 @@ class PersistenceTests(unittest.TestCase):
                 ("Нужно уточнение: Python разработчик","event",0),
                 ("Отклик подтверждён: текст общего события","event",0),
             ])
-
-    def test_only_confirmed_finish_is_deliverable(self):
-        for index,status in enumerate(("needs_clarification","rejected","error","closed","unknown")):
-            job_id=str(index)
-            self.db.discover(vacancy(id=job_id))
-            self.db.finish(job_id,status,notification="Событие: "+status)
-        self.assertEqual(self.db.pending_messages(),[])
-        self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM outbox WHERE kind='event'").fetchone()[0],5)
-
-    def test_uncertain_send_notification_remains_an_event(self):
-        self.ready()
-        self.db.pause(False)
-        self.assertTrue(self.db.claim("123","resume123"))
-        self.db.finish("123","error",notification="Ошибка отправки")
-        self.assertEqual(self.db.get("123")["status"],"unknown")
-        self.assertEqual(self.db.pending_messages(),[])
-        self.assertEqual(self.db.conn.execute("SELECT kind FROM outbox").fetchone()[0],"event")
 
     def test_command_reply_is_deliverable_once(self):
         self.db.enqueue("Фоновое событие")
@@ -104,14 +72,11 @@ class PersistenceTests(unittest.TestCase):
             self.db.enqueue("Неизвестный тип",kind="urgent")
 
     def test_v2_outbox_migration_preserves_state_and_only_delivers_legacy_success(self):
-        self.ready()
-        self.db.pause(False)
-        self.assertTrue(self.db.claim("123","resume123"))
         self.db.set("telegram_chunk_42",2)
         self.db.set("telegram_chunk_41",1)
         self.db.command(90,"status")
         snapshots={table:[tuple(row) for row in self.db.conn.execute("SELECT * FROM "+table)]
-                   for table in ("jobs","attempts","settings","inbox","skip_events")}
+                   for table in ("jobs","settings","inbox","skip_events")}
         legacy=[
             (41,"Нужно уточнение: Python разработчик",0,"2026-10-20T01:00:00+00:00"),
             (42,"Отклик подтверждён: Python разработчик",0,"2026-10-20T02:00:00+00:00"),
@@ -154,11 +119,6 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in self.db.rows(["needs_clarification"],limit=2,newest=True,offset=2)],["103","102"])
         self.assertEqual(self.db.rows(["needs_clarification"],offset=5),[])
 
-    def test_sent_requires_platform_evidence(self):
-        self.ready()
-        with self.assertRaises(ValueError):
-            self.db.finish("123","sent","")
-
     def test_update_dedupe_survives_restart(self):
         self.db.pause(False)
         self.assertTrue(self.db.command(51,"pause","Telegram только показывает отчёты"))
@@ -199,8 +159,3 @@ class PersistenceTests(unittest.TestCase):
                 self.assertEqual([tuple(row) for row in self.db.conn.execute("SELECT * FROM settings WHERE key!='telegram_offset' ORDER BY key")],original)
                 self.assertEqual(self.db.setting("telegram_offset"),number+1)
                 self.assertEqual(self.db.pending_messages()[-1]["kind"],"reply")
-
-    def test_recent_history_is_not_dominated_by_old_records(self):
-        self.ready()
-        self.db.finish("123","sent","HH подтверждает")
-        self.assertEqual(self.db.rows(["sent"],limit=1,newest=True)[0]["id"],"123")

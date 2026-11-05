@@ -37,10 +37,16 @@ class SelectionTests(unittest.TestCase):
     def test_missing_skills_do_not_reduce_coverage(self):
         self.assertEqual(evaluate(vacancy(title="Senior QA", description="Python желательно, Kubernetes обязателен", salary=None)).status, "ready")
 
-    def test_test_closed_and_remote_constraints(self):
-        for change, status in [({"test_required":True},"rejected"), ({"closed":True},"closed"), ({"remote":False},"rejected"), ({"remote":None},"needs_clarification"), ({"description":"Python, готовность к командировкам"},"rejected"), ({"description":"Python. Удалённо только из Москвы"},"needs_clarification")]:
+    def test_closed_and_remote_constraints(self):
+        for change, status in [({"test_required":True},"ready"), ({"closed":True},"closed"), ({"remote":False},"rejected"), ({"remote":None},"needs_clarification"), ({"description":"Python, готовность к командировкам"},"rejected"), ({"description":"Python. Удалённо только из Москвы"},"needs_clarification")]:
             with self.subTest(change=change):
                 self.assertEqual(evaluate(vacancy(salary=Salary(200000), **change)).status,status)
+
+    def test_test_requirement_never_rejects(self):
+        # Правило пропуска тестов (05.11.2026): тест не отклоняет вакансию,
+        # метка добавляется в карточку движком, а не правилами.
+        job=vacancy(test_required=True,salary=Salary(200000))
+        self.assertEqual(evaluate(job).status,"ready")
 
     def test_salary_text_is_not_guessed(self):
         for raw, minimum, maximum, currency, period in [

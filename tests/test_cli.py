@@ -7,14 +7,13 @@ import sys
 import tempfile
 import time
 import unittest
-from contextlib import asynccontextmanager, redirect_stderr, redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 from dotenv import dotenv_values
-from job_finder.__main__ import browser_command, main, process_lock, save_env_values
+from job_finder.__main__ import api_command, main, process_lock, save_env_values
 from job_finder.config import Config
 from job_finder.store import Store
 from job_finder.telegram import TelegramError
@@ -59,7 +58,7 @@ class CliTests(unittest.TestCase):
             root=Path(temp)
             save_env_values(root/'.env', {'LLM_BASE_URL':'mistaken-private-value',
                 'TELEGRAM_BOT_TOKEN':'123:saved-token', 'LLM_API_KEY':'saved-key',
-                'HH_LIVE':'false', 'CUSTOM':'keep'})
+                'CUSTOM':'keep'})
             code, output=self.run_configure(root, ['https://api.openai.com/v1', 'chosen-model'])
             self.assertEqual(code, 0, output)
             with patch.dict(os.environ, {}, clear=True):
@@ -68,7 +67,6 @@ class CliTests(unittest.TestCase):
             self.assertEqual(config.llm_model, 'chosen-model')
             self.assertEqual(config.telegram_token, '123:saved-token')
             self.assertEqual(config.llm_api_key, 'saved-key')
-            self.assertFalse(config.live)
             self.assertEqual(dotenv_values(root/'.env')['CUSTOM'], 'keep')
             for secret in ('mistaken-private-value', 'saved-token', 'saved-key'):
                 self.assertNotIn(secret, output)
@@ -149,14 +147,17 @@ class CliTests(unittest.TestCase):
 
 
 class RuntimeTests(unittest.IsolatedAsyncioTestCase):
-    async def test_run_uses_api_source_when_token_present_without_browser(self):
+    def write_token(self, root):
+        (root/'.state').mkdir(exist_ok=True)
+        (root/'.state'/'api-token.json').write_text(
+            json.dumps({'access_token':'USERT','refresh_token':'R','access_expires_at':9999999999}))
+
+    async def test_run_uses_api_source(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)
             with patch.dict(os.environ, {}, clear=True):
                 config=replace(Config.load(root),telegram_token='123:test-token',owner_id=123)
-            (root/'.state').mkdir()
-            (root/'.state'/'api-token.json').write_text(
-                json.dumps({'access_token':'USERT','refresh_token':'R','access_expires_at':9999999999}))
+            self.write_token(root)
             class ApiSite(Site):
                 async def close(self):
                     pass
@@ -168,9 +169,8 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             with patch('job_finder.hh.HHClient',return_value=ApiSite()), \
                     patch('job_finder.letters.LetterGenerator',return_value=Writer()), \
                     patch('job_finder.telegram.Telegram',return_value=OfflineBot()), \
-                    patch('playwright.async_api.async_playwright',AsyncMock()) as playwright_mock, \
                     patch.dict(os.environ, {}, clear=True):
-                task=asyncio.create_task(browser_command(config,'run'))
+                task=asyncio.create_task(api_command(config,'run'))
                 try:
                     db=Store(config.db_path)
                     try:
@@ -183,15 +183,25 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(db.get('123')['status'],'ready')
                     finally:
                         db.close()
-                    playwright_mock.assert_not_called()
                 finally:
                     task.cancel()
                     await asyncio.gather(task,return_exceptions=True)
 
+    async def test_run_without_api_token_fails_with_guidance(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
+            with patch.dict(os.environ, {}, clear=True):
+                config=replace(Config.load(root),telegram_token='123:test-token',owner_id=123)
+            with self.assertRaises(ValueError) as caught:
+                await api_command(config,'run')
+            self.assertIn('api-login', str(caught.exception))
+
     async def test_telegram_outage_does_not_stop_local_search_or_preparation(self):
         with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp)
             with patch.dict(os.environ, {}, clear=True):
-                config=replace(Config.load(Path(temp)),telegram_token='123:test-token',owner_id=123)
+                config=replace(Config.load(root),telegram_token='123:test-token',owner_id=123)
+            self.write_token(root)
             polled,delivered,prepared=asyncio.Event(),asyncio.Event(),asyncio.Event()
             class OfflineBot:
                 async def poll_once(self):
@@ -201,6 +211,8 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
                     delivered.set()
                     raise TelegramError('Unavailable')
             class WaitingSite(Site):
+                async def close(self):
+                    pass
                 async def search(self,max_pages):
                     await asyncio.gather(polled.wait(),delivered.wait())
                     return await super().search(max_pages)
@@ -209,22 +221,17 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
                     letter=await super().generate(job)
                     prepared.set()
                     return letter
-            context=SimpleNamespace(pages=[object()],close=AsyncMock())
-            pw=SimpleNamespace(chromium=SimpleNamespace(launch_persistent_context=AsyncMock(return_value=context)))
-            @asynccontextmanager
-            async def playwright():
-                yield pw
-            with patch('playwright.async_api.async_playwright',playwright), \
-                    patch('job_finder.browser.Browser',return_value=WaitingSite()), \
+            with patch('job_finder.hh.HHClient',return_value=WaitingSite()), \
                     patch('job_finder.letters.LetterGenerator',return_value=WatchingWriter()), \
                     patch('job_finder.telegram.Telegram',return_value=OfflineBot()), \
                     patch.dict(os.environ, {}, clear=True):
-                task=asyncio.create_task(browser_command(config,'run'))
+                task=asyncio.create_task(api_command(config,'run'))
                 try:
                     await asyncio.wait_for(prepared.wait(),timeout=1)
                     db=Store(config.db_path)
                     try:
-                        self.assertFalse(db.is_paused())
+                        # Пауза — это пауза доставки; поиск и подготовка идут.
+                        self.assertTrue(db.is_paused())
                         self.assertEqual(db.get('123')['status'],'ready')
                     finally:
                         db.close()

@@ -23,8 +23,8 @@ def evaluate(vacancy):
     text = (vacancy.title + "\n" + vacancy.description + "\n" + vacancy.requirements).lower()
     if vacancy.closed:
         return Decision("closed", "Вакансия закрыта")
-    if vacancy.test_required:
-        return Decision("rejected", "Пропущена: предложено пройти тест")
+    # Тест больше не отклоняет вакансию: vacancy.test_required сохраняется
+    # в данных и показывается меткой в карточке (решение 05.11.2026).
     if not re.search(r"\bpython\b|\bпитон\w*", text):
         return Decision("rejected", "Python не упомянут в задачах или требованиях")
     if vacancy.remote is False:

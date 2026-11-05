@@ -6,7 +6,6 @@ chunk and persists its next allowed delivery time, so callers can poll freely.
 
 Telegram sendMessage and SQLite cannot share a transaction. A crash after the
 remote send succeeds but before local progress commits may duplicate ONE chunk.
-Application submission is unrelated to these notification retries.
 """
 import json
 import re
@@ -18,7 +17,7 @@ HELP = ('Команды отчётов:\n/status — состояние рабо
         '/history — история\n/letter ID — письмо и подготовка\n'
         '/clarifications [страница] — вакансии, требующие уточнения\n/help — помощь\n\n'
         'Работа начинается при запуске скрипта на компьютере. Остановка — закрытием процесса. '
-        'Telegram только показывает отчёты; автоматические уведомления — только об успешных откликах.')
+        'Telegram показывает отчёты; откликаетесь вы сами, автоматической отправки нет.')
 
 STATUS_LABELS = {'found': 'найдена', 'rejected': 'пропущена', 'needs_clarification': 'нужно уточнение',
     'ready': 'готова', 'sending': 'отправляется', 'sent': 'отправлена',
@@ -72,17 +71,14 @@ class Telegram:
             blocked = self.store.setting('browser_blocked', False)
             paused = self.store.is_paused()
             lines = ['Скрипт работает; доступ к HH заблокирован.' if blocked else 'Скрипт работает.',
-                     'Режим: ' + ('реальная отправка' if self.config.live else 'подготовка без отправки'),
-                     'Пауза отправок: ' + ('да' if paused else 'нет'),
+                     'Пауза доставки: ' + ('да' if paused else 'нет'),
                      'Всего: ' + ', '.join(STATUS_LABELS.get(key, key) + ' ' + str(value)
                                            for key, value in sorted(counts.items())),
-                     'Уведомления: только успешные отклики. Ответы на команды приходят по запросу.']
+                     'Уведомления: по запросу; автоотклик удалён — откликаетесь вы сами.']
             if blocked:
                 lines.append('Нужно действие: ' + self.store.setting('attention_reason', 'Проверьте вход и доступ к HH'))
-            if paused and counts.get('unknown', 0):
-                lines.append('Отправка ждёт проверки предыдущего результата. '
-                             + ('Поиск сможет продолжиться после восстановления доступа.' if blocked
-                                else 'Поиск вакансий продолжается.'))
+            if paused:
+                lines.append('Доставка уведомлений приостановлена.')
             report = self.store.setting('search_report')
             if isinstance(report, dict):
                 lines.append('Последний поиск: Вакансий: ' + str(len(report.get('ids', [])))
@@ -208,6 +204,9 @@ class Telegram:
 
     async def flush(self):
         if time.time() < self.store.setting('telegram_next_delivery', 0):
+            return 0
+        # Пауза доставки: сообщения накапливаются в outbox, но не отправляются.
+        if self.store.is_paused():
             return 0
         for message in self.store.pending_messages():
             chunks = _chunks(message['text'])

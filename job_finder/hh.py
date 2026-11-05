@@ -2,20 +2,17 @@
 
 Реализован соискательский API в стиле официального Android-приложения hh.ru
 (OAuth2 с ключами приложения; протокол описан в
-docs/research/2026-10-30-programmatic-api.md). Используется для поиска,
-чтения вакансий и отправки откликов; браузер остаётся только резервом.
+docs/research/2026-10-30-programmatic-api.md). Используется для поиска и
+чтения вакансий; откликается пользователь сам (этап 1b плана).
 
 Все ошибки санитизируются: токены, cookies и тела ответов в исключения
-не попадают. Ключевые инварианты совпадают с браузерным адаптером:
-намерение фиксируется до отправки, отклик считается отправленным только
-после подтверждения площадкой, повторная отправка запрещена.
+не попадают.
 """
 import asyncio
 import base64
 import html
 import json
 import os
-import random
 import re
 import time
 from pathlib import Path
@@ -25,8 +22,7 @@ import httpx
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 
-from .models import AttentionRequired, Outcome, Salary, Vacancy
-from .rules import evaluate
+from .models import AttentionRequired, Salary, Vacancy
 
 API_URL = "https://api.hh.ru"
 OAUTH_URL = "https://hh.ru/oauth"
@@ -51,8 +47,6 @@ SEARCH_PER_PAGE = 100
 API_MAX_RESULTS = 2000
 EXPERIENCE_RANGES = ("noExperience", "between1And3", "between3And6", "moreThan6")
 LOGIN_PRE_DELAY = 7.5
-APPLY_MIN_DELAY = 1.0
-APPLY_MAX_DELAY = 3.0
 MAX_CAPTCHA_ATTEMPTS = 5
 
 
@@ -123,7 +117,6 @@ def vacancy_from_json(data):
         remote = "REMOTE" in work_formats
     elif (data.get("schedule") or {}).get("id") == "remote":
         remote = True
-    relations = data.get("relations") or []
     vacancy_type = (data.get("type") or {}).get("id")
     return Vacancy(
         id=vacancy_id,
@@ -134,7 +127,6 @@ def vacancy_from_json(data):
         remote=remote,
         test_required=bool(data.get("has_test") or (data.get("test") or {}).get("required")),
         closed=bool(data.get("archived") or vacancy_type == "closed"),
-        already_applied=bool(relations),
         requirements=", ".join(item.get("name") or "" for item in (data.get("key_skills") or [])),
     )
 
@@ -309,86 +301,6 @@ class HHClient:
 
     async def me(self):
         return await self._json("GET", "/me")
-
-    async def _negotiation_ids(self, vacancy_id, max_pages=20):
-        for page in range(max_pages):
-            body = await self._json("GET", "/negotiations",
-                                    params={"per_page": 100, "page": page})
-            items = body.get("items") or []
-            for item in items:
-                vacancy = item.get("vacancy") if isinstance(item, dict) else None
-                item_vacancy = str((vacancy or {}).get("id") or item.get("vacancy_id") or "")
-                if item_vacancy == str(vacancy_id):
-                    return item.get("id")
-            if not items or page + 1 >= (body.get("pages") or 0):
-                return None
-        return None
-
-    async def _confirm(self, vacancy_id, attempts=3):
-        for attempt in range(attempts):
-            if attempt:
-                await asyncio.sleep(2)
-            negotiation_id = await self._negotiation_ids(vacancy_id)
-            if negotiation_id is not None:
-                return Outcome("sent", "Подтверждено списком откликов HH (отклик %s)" % negotiation_id,
-                               "Отклик подтверждён API HH")
-        return Outcome("unknown", reason="Отклик отправлен через API, но не найден в списке откликов HH. Проверьте историю вручную")
-
-    async def reconcile(self, job_id):
-        negotiation_id = await self._negotiation_ids(job_id)
-        if negotiation_id is not None:
-            return Outcome("sent", "Подтверждено списком откликов HH (отклик %s)" % negotiation_id,
-                           "Отклик подтверждён API HH")
-        return Outcome("unknown", reason="В списке откликов HH не найден. Проверьте историю вручную")
-
-    @staticmethod
-    def _describe_error(body):
-        errors = body.get("errors") if isinstance(body, dict) else None
-        if isinstance(errors, list):
-            for error in errors:
-                if isinstance(error, dict) and error.get("type") == "negotiations-limit-exceeded":
-                    return "Достигнут дневной лимит откликов HH"
-                if isinstance(error, dict) and error.get("value"):
-                    return str(error["value"])[:300]
-        return "неизвестная причина"
-
-    async def apply(self, vacancy, letter, before_send):
-        """Отклик через POST /negotiations; подтверждение — по списку откликов."""
-        attempted = False
-        try:
-            current = await self.read(vacancy.id)
-            if current.already_applied:
-                return Outcome("sent", "Отклик уже отмечен на HH", "Ранее отправленный отклик")
-            decision = evaluate(current)
-            if decision.status != "ready":
-                return Outcome(decision.status, reason=decision.reason)
-            if not await before_send():
-                return Outcome("ready", reason="Пауза или режим просмотра: отправка не начата")
-            # Намерение уже зафиксировано в БД (before_send выполнил claim).
-            # Дальнейшие сбои не могут трактоваться как «не отправлено».
-            attempted = True
-            await asyncio.sleep(random.uniform(APPLY_MIN_DELAY, APPLY_MAX_DELAY))
-            response = await self._request("POST", "/negotiations", data={
-                "resume_id": self.config.resume_id,
-                "vacancy_id": vacancy.id,
-                "message": letter.text,
-            })
-            if response.is_redirect:
-                return Outcome("needs_clarification",
-                               reason="HH перенаправил на форму отклика; требуется браузер или ручной отклик")
-            body = self._safe_json(response)
-            if body == {}:
-                return await self._confirm(vacancy.id)
-            return Outcome("error", reason="HH отклонил отклик: " + self._describe_error(body))
-        except AttentionRequired:
-            if attempted:
-                return Outcome("unknown", reason="После начала отправки HH запросил действие пользователя")
-            raise
-        except HHAPIError as exc:
-            return Outcome("unknown" if attempted else "error", reason=str(exc))
-        except Exception as exc:
-            return Outcome("unknown" if attempted else "error",
-                           reason="Сбой API: " + type(exc).__name__)
 
 
 def parse_initial_state(text):
