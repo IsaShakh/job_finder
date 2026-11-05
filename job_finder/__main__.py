@@ -143,7 +143,7 @@ def doctor(config):
 
 
 async def api_login(config):
-    from .hh import authorize
+    from .adapters.hh import authorize
     username=input("Email или телефон HH: ").strip()
     if not username:
         raise ValueError("Логин не введён")
@@ -186,15 +186,17 @@ def telegram_tasks(bot):
     return polling, delivery
 
 
-async def run_worker(config, store, source, label):
+async def run_worker(config, store, label):
+    from .adapters import build_adapters
     from .engine import Engine
     from .letters import LetterGenerator
     from .telegram import Telegram
-    engine=Engine(config,store,source,LetterGenerator(config))
+    adapters=build_adapters(config)
+    engine=Engine(config,store,adapters,LetterGenerator(config))
     bot=Telegram(config,store)
     polling,delivery=telegram_tasks(bot)
-    print("Скрипт запущен: поиск начнётся автоматически. Остановка здесь: Ctrl+C.")
-    print("Источник вакансий: "+label+". Telegram показывает результаты; /status — состояние.")
+    print("Скрипт запущен: поиск запускается командой /search. Остановка здесь: Ctrl+C.")
+    print("Источники вакансий: "+label+". Telegram показывает результаты; /status — состояние.")
     tasks=[asyncio.create_task(engine.run()),asyncio.create_task(polling()),asyncio.create_task(delivery())]
     try:
         await asyncio.gather(*tasks)
@@ -202,30 +204,39 @@ async def run_worker(config, store, source, label):
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks,return_exceptions=True)
+        for adapter in adapters:
+            await adapter.close()
 
 
 async def api_command(config, command):
+    from .adapters import build_adapters
+    from .async_store import AsyncStore
     from .engine import Engine
     from .letters import LetterGenerator
     if command=="run" and (not config.telegram_token or config.owner_id<=0):
         raise ValueError("Сначала настройте Telegram: configure, затем pair")
-    store=Store(config.db_path)
+    if "hh" in config.sources and not config.api_token_path.exists():
+        raise ValueError("Сначала выполните вход в API HH: python -m job_finder api-login")
+    store=AsyncStore(config.db_path)
+    await store.start()
     try:
-        if not config.api_token_path.exists():
-            raise ValueError("Сначала выполните вход в API HH: python -m job_finder api-login")
-        from .hh import HHClient
-        source=HHClient(config)
+        adapters=build_adapters(config)
         try:
-            engine=Engine(config,store,source,LetterGenerator(config))
+            engine=Engine(config,store,adapters,LetterGenerator(config))
             if command=="search":
-                await engine.search()
-                print("Поиск закончен (API HH). Найденные вакансии сохранены.")
+                await store.round_request()
+                while True:
+                    await engine.run_pending_rounds()
+                    if not await engine.resume_waiting():
+                        break
+                print("Поиск закончен. Источники: "+", ".join(config.sources))
                 return
-            await run_worker(config,store,source,"API HH")
+            await run_worker(config,store,", ".join(config.sources))
         finally:
-            await source.close()
+            for adapter in adapters:
+                await adapter.close()
     finally:
-        store.close()
+        await store.close()
 
 
 def main(argv=None):

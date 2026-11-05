@@ -19,7 +19,7 @@ class Config:
     llm_base_url: str = 'https://api.openai.com/v1'
     llm_api_key: str = field(default='', repr=False)
     llm_model: str = ''
-    search_interval: int = 21600
+    sources: tuple = ('hh',)
     max_search_pages: int = 100
 
     @classmethod
@@ -40,11 +40,10 @@ class Config:
                 raise ValueError(name + ': нужно положительное целое число')
             return int(raw)
 
-        def boolean(name):
-            raw = value(name, 'false').lower()
-            if raw not in ('true', 'false', '1', '0'):
-                raise ValueError(name + ': допустимы true или false')
-            return raw in ('true', '1')
+        def list_of(name, default):
+            raw = value(name, default)
+            items = tuple(item.strip() for item in raw.split(',') if item.strip())
+            return items or (default,)
 
         token = value('TELEGRAM_BOT_TOKEN')
         if token and not re.fullmatch(r'[0-9]+:[A-Za-z0-9_-]+', token):
@@ -67,5 +66,5 @@ class Config:
                    telegram_token=token,
                    owner_id=owner, llm_base_url=base, llm_api_key=value('LLM_API_KEY'),
                    llm_model=value('LLM_MODEL'),
-                   search_interval=positive('SEARCH_INTERVAL', 21600),
+                   sources=list_of('SOURCES', 'hh'),
                    max_search_pages=positive('MAX_SEARCH_PAGES', 100))

@@ -1,9 +1,10 @@
-"""Программный доступ к API hh.ru без браузера.
+"""Адаптер hh.ru: программный API в стиле официального Android-приложения.
 
-Реализован соискательский API в стиле официального Android-приложения hh.ru
-(OAuth2 с ключами приложения; протокол описан в
-docs/research/2026-10-30-programmatic-api.md). Используется для поиска и
-чтения вакансий; откликается пользователь сам (этап 1b плана).
+Реализован соискательский API hh.ru (OAuth2 с ключами приложения; протокол
+описан в docs/research/2026-10-30-programmatic-api.md). Используется для
+поиска и чтения вакансий; откликается пользователь сам. Соответствует
+контракту `SourceAdapter` (adapters/base.py): search → SearchReport,
+fetch(native_id) → Vacancy.
 
 Все ошибки санитизируются: токены, cookies и тела ответов в исключения
 не попадают.
@@ -12,7 +13,6 @@ import asyncio
 import base64
 import html
 import json
-import os
 import re
 import time
 from pathlib import Path
@@ -22,7 +22,9 @@ import httpx
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 
-from .models import AttentionRequired, Salary, Vacancy
+from ..models import AttentionRequired, Salary, Vacancy
+from .base import (AdapterError, OAuthClient, RateLimiter, SearchHit,
+                   SearchReport, TokenStore, safe_json)
 
 API_URL = "https://api.hh.ru"
 OAUTH_URL = "https://hh.ru/oauth"
@@ -50,7 +52,7 @@ LOGIN_PRE_DELAY = 7.5
 MAX_CAPTCHA_ATTEMPTS = 5
 
 
-class HHAPIError(ValueError):
+class HHAPIError(AdapterError):
     """Санитизированная ошибка API hh.ru: без токенов и тел ответов."""
 
 
@@ -59,35 +61,6 @@ def strip_html(text):
         return ""
     text = re.sub(r"<[^>]+>", " ", text)
     return html.unescape(re.sub(r"\s+", " ", text)).strip()
-
-
-class TokenStore:
-    """Файл .state/api-token.json с токенами OAuth (0600, атомарная запись)."""
-
-    def __init__(self, path):
-        self.path = Path(path)
-
-    def load(self):
-        if not self.path.exists():
-            return {}
-        try:
-            return json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return {}
-
-    def save(self, token):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_name(self.path.name + ".tmp")
-        temporary.write_text(json.dumps(token), encoding="utf-8")
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, self.path)
-        os.chmod(self.path, 0o600)
-
-    def clear(self):
-        try:
-            self.path.unlink()
-        except FileNotFoundError:
-            pass
 
 
 def vacancy_from_json(data):
@@ -131,31 +104,23 @@ def vacancy_from_json(data):
     )
 
 
-class HHClient:
-    """Клиент соискательского API; интерфейс совместим с Engine."""
+class HHClient(OAuthClient):
+    """Адаптер hh.ru; интерфейс соответствует контракту SourceAdapter."""
+
+    name = "hh"
+    oauth_token_url = OAUTH_URL + "/token"
 
     def __init__(self, config, http_client=None, min_interval=MIN_REQUEST_INTERVAL):
-        self.config = config
-        self.tokens = TokenStore(config.api_token_path)
-        self.http_client = http_client
-        self.owns_client = http_client is None
-        self.min_interval = min_interval
-        self._last_request = 0.0
+        super().__init__(config, config.api_token_path,
+                         http_client=http_client, min_interval=min_interval)
 
-    async def close(self):
-        if self.owns_client and self.http_client is not None:
-            await self.http_client.aclose()
-            self.http_client = None
-
-    async def _client(self):
-        if self.http_client is None:
-            self.http_client = httpx.AsyncClient(timeout=40, follow_redirects=False)
-        return self.http_client
-
-    async def _pause(self):
-        remaining = self.min_interval - (time.monotonic() - self._last_request)
-        if remaining > 0:
-            await asyncio.sleep(remaining)
+    def refresh_payload(self, refresh):
+        return {
+            "client_id": ANDROID_CLIENT_ID,
+            "client_secret": ANDROID_CLIENT_SECRET,
+            "grant_type": "refresh_token",
+            "refresh_token": refresh,
+        }
 
     def _headers(self, auth=True):
         headers = {
@@ -170,14 +135,6 @@ class HHClient:
         return headers
 
     @staticmethod
-    def _safe_json(response):
-        try:
-            body = response.json()
-        except ValueError:
-            return {}
-        return body if isinstance(body, dict) else {}
-
-    @staticmethod
     def _captcha(body):
         errors = body.get("errors") if isinstance(body, dict) else None
         if isinstance(errors, list):
@@ -187,50 +144,24 @@ class HHClient:
                     return True
         return False
 
-    async def _refresh(self):
-        token = self.tokens.load()
-        refresh = token.get("refresh_token")
-        if not refresh:
-            raise HHAPIError("Токен HH истёк; выполните api-login")
-        client = await self._client()
-        response = await client.post(OAUTH_URL + "/token", data={
-            "client_id": ANDROID_CLIENT_ID,
-            "client_secret": ANDROID_CLIENT_SECRET,
-            "grant_type": "refresh_token",
-            "refresh_token": refresh,
-        })
-        if response.status_code != 200:
-            self.tokens.clear()
-            raise HHAPIError("HH не обновил токен; выполните api-login")
-        body = self._safe_json(response)
-        access = body.get("access_token")
-        if not isinstance(access, str) or not access.startswith("USER"):
-            self.tokens.clear()
-            raise HHAPIError("HH вернул некорректный токен; выполните api-login")
-        self.tokens.save({
-            "access_token": access,
-            "refresh_token": body.get("refresh_token") or refresh,
-            "access_expires_at": time.time() + int(body.get("expires_in") or 0),
-        })
-
     async def _request(self, method, path, params=None, data=None, auth=True,
                        allow_status=(), retry_refresh=True):
         """Один запрос к API с паузой, обновлением токена и проверкой капчи."""
         client = await self._client()
-        await self._pause()
+        await self.limiter.pause()
         try:
             response = await client.request(method, API_URL + path, params=params,
                                             data=data, headers=self._headers(auth))
         finally:
-            self._last_request = time.monotonic()
-        body = self._safe_json(response)
+            self.limiter.mark()
+        body = safe_json(response)
         if response.status_code == 403 and self._captcha(body):
             raise AttentionRequired("HH просит проверку (капчу). Откройте hh.ru вручную или повторите позже")
         if (response.status_code == 403 and auth and retry_refresh
                 and self.tokens.load().get("refresh_token")):
             try:
                 await self._refresh()
-            except HHAPIError:
+            except AdapterError:
                 raise
             return await self._request(method, path, params=params, data=data,
                                        auth=auth, allow_status=allow_status, retry_refresh=False)
@@ -240,15 +171,16 @@ class HHClient:
 
     async def _json(self, method, path, params=None, data=None):
         response = await self._request(method, path, params=params, data=data)
-        body = self._safe_json(response)
+        body = safe_json(response)
         if not body and method != "POST":
             raise HHAPIError("HH вернул некорректный ответ API")
         return body
 
-    async def search(self, max_pages=100):
+    async def search(self, criteria=None, since=None, max_pages=100):
         """Поиск Python-вакансий (удалённо) с контролем полноты выдачи."""
-        ids = set()
-        report = {"ids": [], "pages": 0, "incomplete": False, "notes": []}
+        hits = set()
+        notes = []
+        incomplete = False
         partitions = [None]
         split = False
         while partitions:
@@ -269,32 +201,32 @@ class HHClient:
                 for item in items:
                     if isinstance(item, dict) and item.get("id"):
                         collected.add(str(item["id"]))
-                report["pages"] += 1
                 total_pages = body.get("pages") or 0
                 if not items or page + 1 >= total_pages:
                     break
-            ids.update(collected)
+            hits.update(collected)
             capped = (expected is not None and len(collected) < expected) or (
                 expected is not None and expected > API_MAX_RESULTS)
             if capped and experience is None and not split:
                 split = True
                 partitions.extend(EXPERIENCE_RANGES)
-                report["notes"].append("Выдача ограничена лимитом API; дополнительно обходим четыре диапазона опыта")
+                notes.append("Выдача ограничена лимитом API; дополнительно обходим четыре диапазона опыта")
             elif capped:
-                report["incomplete"] = True
-                report["notes"].append("Не вся выдача доступна: " + str(experience or "общий поиск"))
-        report["ids"] = sorted(ids, key=int)
-        return report
+                incomplete = True
+                notes.append("Не вся выдача доступна: " + str(experience or "общий поиск"))
+        return SearchReport(
+            hits=[SearchHit(native_id=item) for item in sorted(hits, key=int)],
+            incomplete=incomplete, notes=notes)
 
-    async def read(self, job_id):
+    async def fetch(self, native_id):
         """Читает одну вакансию; закрытые и недоступные не блокируют очередь."""
-        if not str(job_id).isdigit():
+        if not str(native_id).isdigit():
             raise ValueError("Некорректный ID вакансии")
-        response = await self._request("GET", "/vacancies/" + str(job_id),
+        response = await self._request("GET", "/vacancies/" + str(native_id),
                                        allow_status=(404, 410))
         if response.status_code in (404, 410):
-            return Vacancy(str(job_id), "Вакансия недоступна", "", closed=True)
-        data = self._safe_json(response)
+            return Vacancy(str(native_id), "Вакансия недоступна", "", closed=True)
+        data = safe_json(response)
         if not data.get("id"):
             raise HHAPIError("HH вернул некорректные данные вакансии")
         return vacancy_from_json(data)

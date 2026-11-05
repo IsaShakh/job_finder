@@ -9,9 +9,9 @@ from unittest.mock import patch
 
 import httpx
 
+from job_finder.async_store import AsyncStore
 from job_finder.config import Config
 from job_finder.models import Letter, Vacancy
-from job_finder.store import Store
 from job_finder.telegram import Telegram, TelegramError
 
 
@@ -36,8 +36,9 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(os.environ, {}, clear=True):
             self.config = replace(Config.load(Path(self.directory.name)),
                                   owner_id=123, telegram_token='123:private-token')
-        self.store = Store(self.config.db_path)
-        self.addCleanup(lambda: self.store.close())
+        self.store = AsyncStore(self.config.db_path)
+        await self.store.start()
+        self.addAsyncCleanup(self._close_store)
         self.updates = []
         self.requests = []
         self.send_results = []
@@ -45,6 +46,9 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
         self.client = httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
         self.addAsyncCleanup(self.client.aclose)
         self.telegram = Telegram(self.config, self.store, http_client=self.client)
+
+    async def _close_store(self):
+        await self.store.close()
 
     def handle(self, request):
         method = request.url.path.rsplit('/', 1)[-1]
@@ -58,6 +62,12 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
             return self.send_results.pop(0)
         return httpx.Response(200, json={'ok': True, 'result': {'message_id': 1}})
 
+    async def reconnect(self):
+        await self.store.close()
+        self.store = AsyncStore(self.config.db_path)
+        await self.store.start()
+        self.telegram = Telegram(self.config, self.store, http_client=self.client)
+
     async def test_only_owner_in_own_private_chat_can_read(self):
         self.updates = [message(1, '/resume', sender=999),
                         message(2, '/letter 42', chat=-123, kind='group'),
@@ -66,32 +76,40 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
                         callback(5, '/resume', sender=999),
                         callback(6, '/history', chat=-123, kind='supergroup')]
         await self.telegram.poll_once()
-        self.assertTrue(self.store.is_paused())
-        self.assertEqual(self.store.setting('telegram_offset'), 7)
-        self.assertEqual(self.store.pending_messages(), [])
+        self.assertTrue(await self.store.is_paused())
+        self.assertEqual(await self.store.setting('telegram_offset'), 7)
+        self.assertEqual(await self.store.pending_messages(), [])
         self.assertFalse(any(method == 'sendMessage' for method, _ in self.requests))
 
     async def test_read_requests_are_durable_and_duplicate_updates_do_not_repeat_replies(self):
         self.updates = [message(10, '/status'), message(11, '/help')]
         await self.telegram.poll_once()
-        self.assertTrue(self.store.is_paused())
-        self.assertIsNone(self.store.setting('search_requested'))
-        self.assertEqual(len(self.store.pending_messages()), 2)
-        self.store.close()
-        self.store = Store(self.config.db_path)
-        self.telegram = Telegram(self.config, self.store, http_client=self.client)
+        self.assertTrue(await self.store.is_paused())
+        self.assertEqual(len(await self.store.pending_messages()), 2)
+        await self.reconnect()
         await self.telegram.poll_once()
-        self.assertEqual(len(self.store.pending_messages()), 2)
+        self.assertEqual(len(await self.store.pending_messages()), 2)
         self.assertEqual(self.requests[-1][1]['offset'], 12)
 
+    async def test_search_command_creates_round_before_acknowledgement(self):
+        self.updates = [message(1, '/search')]
+        await self.telegram.poll_once()
+        cursor = await self.store._conn.execute("SELECT state FROM round_requests")
+        states = [row[0] for row in await cursor.fetchall()]
+        await cursor.close()
+        self.assertEqual(states, ['queued'])
+        self.assertEqual(await self.store.setting('telegram_offset'), 2)
+        reply = (await self.store.pending_messages())[0]['text']
+        self.assertIn('Поиск запущен', reply)
+
     async def test_old_owner_callback_is_inert_acknowledged_and_markup_removed_once(self):
-        self.store.set('browser_blocked', True)
+        await self.store.set('browser_blocked', True)
         self.updates = [callback(2, '/resume')]
         await self.telegram.poll_once()
         await self.telegram.poll_once()
-        self.assertTrue(self.store.is_paused())
-        self.assertTrue(self.store.setting('browser_blocked'))
-        self.assertEqual(self.store.pending_messages(), [])
+        self.assertTrue(await self.store.is_paused())
+        self.assertTrue(await self.store.setting('browser_blocked'))
+        self.assertEqual(await self.store.pending_messages(), [])
         self.assertIn(('answerCallbackQuery', {'callback_query_id': 'callback-2'}), self.requests)
         edits = [data for method, data in self.requests if method == 'editMessageReplyMarkup']
         self.assertEqual(edits, [{'chat_id': 123, 'message_id': 2,
@@ -109,24 +127,22 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
         self.updates = updates
         await self.telegram.poll_once()
         self.assertFalse(any(method == 'editMessageReplyMarkup' for method, _ in self.requests))
-        self.assertEqual(self.store.pending_messages(), [])
+        self.assertEqual(await self.store.pending_messages(), [])
         self.assertTrue(all(set(data) == {'callback_query_id'} for method, data in self.requests
                             if method == 'answerCallbackQuery'))
 
     async def test_all_stale_callback_actions_are_inert_even_read_requests(self):
-        self.store.discover(Vacancy('42', 'Python', 'Python'))
-        self.store.decide('42', 'rejected', 'Не подходит')
-        self.store.pause(False)
-        before = self.store.get('42')
+        await self.store.discover('hh', Vacancy('42', 'Python', 'Python'))
+        await self.store.decide('42', 'rejected', 'Не подходит')
+        await self.store.pause(False)
+        before = await self.store.get('42')
         actions = ('/search', '/pause', '/resume', '/reconcile', '/requeue 42',
                    '/history', '/letter 42', '/status')
         self.updates = [callback(i, action) for i, action in enumerate(actions, 1)]
         await self.telegram.poll_once()
-        self.assertFalse(self.store.is_paused())
-        self.assertIsNone(self.store.setting('search_requested'))
-        self.assertIsNone(self.store.setting('reconcile_requested'))
-        self.assertEqual(self.store.get('42'), before)
-        self.assertEqual(self.store.pending_messages(), [])
+        self.assertFalse(await self.store.is_paused())
+        self.assertEqual(await self.store.get('42'), before)
+        self.assertEqual(await self.store.pending_messages(), [])
 
     async def test_uneditable_old_message_does_not_block_reports_or_repeat_action(self):
         def respond(request):
@@ -137,54 +153,54 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
         self.updates = [callback(1, '/resume'), message(2, '/status')]
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
             await Telegram(self.config, self.store, http_client=client).poll_once()
-        self.assertTrue(self.store.is_paused())
-        self.assertEqual(len(self.store.pending_messages()), 1)
-        self.assertIn('Пауза доставки', self.store.pending_messages()[0]['text'])
-        self.assertNotIn('private-token', self.store.pending_messages()[0]['text'])
-        self.assertEqual(self.store.setting('telegram_offset'), 3)
-        self.assertIsNone(self.store.setting('telegram_next_poll'))
+        self.assertTrue(await self.store.is_paused())
+        messages = await self.store.pending_messages()
+        self.assertEqual(len(messages), 1)
+        self.assertIn('Пауза доставки', messages[0]['text'])
+        self.assertNotIn('private-token', messages[0]['text'])
+        self.assertEqual(await self.store.setting('telegram_offset'), 3)
+        self.assertIsNone(await self.store.setting('telegram_next_poll'))
         self.assertEqual(sum(method == 'editMessageReplyMarkup' for method, _ in self.requests), 1)
 
     async def test_start_help_offer_only_read_commands_and_never_controls(self):
         self.updates = [message(1, '/start'), message(2, '/help')]
         await self.telegram.poll_once()
-        for row in self.store.pending_messages():
+        for row in await self.store.pending_messages():
             self.assertIn('/status', row['text'])
             self.assertIn('/clarifications', row['text'])
-            for command in ('/pause', '/resume', '/search', '/requeue', '/reconcile', '/queue', '/settings'):
+            for command in ('/pause', '/resume', '/requeue', '/reconcile', '/queue', '/settings'):
                 self.assertNotIn(command, row['text'])
 
     async def test_command_views_include_exact_letter_claims_and_preparation(self):
-        self.store.discover(Vacancy('42', 'Python engineer', 'Python', company='Company'))
-        self.store.save_letter('42', Letter('Exact letter', ['python_backend'], ['Added claim'], ['Practice task']))
-        self.store.decide('42', 'ready', 'Eligible')
+        await self.store.discover('hh', Vacancy('42', 'Python engineer', 'Python', company='Company'))
+        await self.store.save_letter('42', Letter('Exact letter', ['python_backend'], ['Added claim'], ['Practice task']))
+        await self.store.decide('42', 'ready', 'Eligible')
         self.updates = [message(1, '/letter 42'), message(2, '/status'), message(3, '/history'),
                         message(4, '/status'), message(5, '/start'), message(6, '/help')]
         await self.telegram.poll_once()
-        texts = '\n'.join(row['text'] for row in self.store.pending_messages())
+        texts = '\n'.join(row['text'] for row in await self.store.pending_messages())
         for expected in ('Exact letter', 'Added claim', 'Practice task', 'python_backend',
                          'https://hh.ru/vacancy/42', '137924141', '/status'):
             self.assertIn(expected, texts)
-        self.assertIsNone(self.store.setting('reconcile_requested'))
         self.assertNotIn('private-token', texts)
 
     async def test_retired_pause_and_bad_letter_arguments_are_safe(self):
-        self.store.pause(False)
+        await self.store.pause(False)
         self.updates = [message(1, '/pause'), message(2, '/letter ../.env'),
                         message(3, '/letter 999'), message(4, '/wat')]
         await self.telegram.poll_once()
-        self.assertFalse(self.store.is_paused())
-        self.assertEqual(self.store.setting('telegram_offset'), 5)
-        self.assertEqual(len(self.store.pending_messages()), 4)
+        self.assertFalse(await self.store.is_paused())
+        self.assertEqual(await self.store.setting('telegram_offset'), 5)
+        self.assertEqual(len(await self.store.pending_messages()), 4)
 
     async def test_clarifications_list_filters_ready_jobs_and_status_only_counts_them(self):
-        self.store.discover(Vacancy('42', 'Уточнить валюту', 'Python'))
-        self.store.decide('42', 'needs_clarification', 'Неизвестный курс валюты')
-        self.store.discover(Vacancy('43', 'Готовая вакансия', 'Python'))
-        self.store.decide('43', 'ready', 'Подходит')
+        await self.store.discover('hh', Vacancy('42', 'Уточнить валюту', 'Python'))
+        await self.store.decide('42', 'needs_clarification', 'Неизвестный курс валюты')
+        await self.store.discover('hh', Vacancy('43', 'Готовая вакансия', 'Python'))
+        await self.store.decide('43', 'ready', 'Подходит')
         self.updates = [message(1, '/clarifications'), message(2, '/status')]
         await self.telegram.poll_once()
-        clarification, queue = [row['text'] for row in self.store.pending_messages()]
+        clarification, queue = [row['text'] for row in await self.store.pending_messages()]
         for expected in ('Уточнить валюту', 'Неизвестный курс валюты', 'https://hh.ru/vacancy/42', 'Всего: 1'):
             self.assertIn(expected, clarification)
         self.assertNotIn('Готовая вакансия', clarification)
@@ -193,11 +209,11 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_clarifications_pages_cover_every_entry_once(self):
         for number in range(200, 225):
-            self.store.discover(Vacancy(str(number), 'Уточнение ' + str(number), 'Python'))
-            self.store.decide(str(number), 'needs_clarification', 'Нужно проверить условия')
+            await self.store.discover('hh', Vacancy(str(number), 'Уточнение ' + str(number), 'Python'))
+            await self.store.decide(str(number), 'needs_clarification', 'Нужно проверить условия')
         self.updates = [message(1, '/clarifications'), message(2, '/clarifications 2')]
         await self.telegram.poll_once()
-        first, second = [row['text'] for row in self.store.pending_messages()]
+        first, second = [row['text'] for row in await self.store.pending_messages()]
         self.assertEqual(first.count('https://hh.ru/vacancy/'), 20)
         self.assertEqual(second.count('https://hh.ru/vacancy/'), 5)
         self.assertIn('/clarifications 2', first)
@@ -210,68 +226,70 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
     async def test_clarifications_empty_list_and_invalid_pages_are_explained(self):
         self.updates = [message(1, '/clarifications')]
         await self.telegram.poll_once()
-        self.assertIn('Уточнений пока нет', self.store.pending_messages()[0]['text'])
+        messages = await self.store.pending_messages()
+        self.assertIn('Уточнений пока нет', messages[0]['text'])
         for argument in ('0', '-1', 'abc', '2', '1 extra', '9' * 5000):
             with self.subTest(argument=argument[:20]):
-                action, response = self.telegram._response('/clarifications ' + argument)
+                action, response = await self.telegram._response('/clarifications ' + argument)
                 self.assertEqual(action, 'clarifications')
                 self.assertIn('/clarifications', response)
                 self.assertNotIn('Команды:', response)
 
     async def test_clarifications_never_disclose_to_other_users_or_groups(self):
-        self.store.discover(Vacancy('42', 'Личная вакансия', 'Python'))
-        self.store.decide('42', 'needs_clarification', 'Личные условия')
+        await self.store.discover('hh', Vacancy('42', 'Личная вакансия', 'Python'))
+        await self.store.decide('42', 'needs_clarification', 'Личные условия')
         self.updates = [message(1, '/clarifications', sender=999, chat=999),
                         callback(2, '/clarifications', chat=-123, kind='group')]
         await self.telegram.poll_once()
-        self.assertEqual(self.store.pending_messages(), [])
+        self.assertEqual(await self.store.pending_messages(), [])
 
-    async def test_status_explains_notification_policy_attention_counts_and_search_without_mutation(self):
-        self.store.set('browser_blocked', True)
-        self.store.set('attention_reason', 'Нужно заново войти в HH')
-        self.store.set('search_report', {'ids': ['42', '43'], 'pages': 3, 'incomplete': True, 'notes': ['Ограничена выдача']})
+    async def test_status_explains_attention_counts_and_sources_without_mutation(self):
+        await self.store.set('browser_blocked', True)
+        await self.store.set('attention_reason', 'Нужно заново войти в HH')
+        await self.store.set('search_report:hh', {'ids': ['42', '43'], 'incomplete': True,
+                                                  'notes': ['Ограничена выдача']})
         self.updates = [message(1, '/status')]
         await self.telegram.poll_once()
-        response = self.store.pending_messages()[0]['text']
+        response = (await self.store.pending_messages())[0]['text']
         self.assertIn('автоотклик удалён', response)
         self.assertIn('Нужно заново войти в HH', response)
-        self.assertIn('Страниц: 3', response)
-        self.assertIn('Вакансий: 2', response)
+        self.assertIn('hh: вакансий 2', response)
+        self.assertIn('охват неполный', response)
         self.assertIn('Ограничена выдача', response)
-        self.assertTrue(self.store.is_paused())
-        self.assertTrue(self.store.setting('browser_blocked'))
-        self.assertIsNone(self.store.setting('search_requested'))
-        self.store.set('browser_blocked', False)
-        self.assertNotIn('Нужно заново войти в HH', self.telegram._response('/status')[1])
+        self.assertTrue(await self.store.is_paused())
+        self.assertTrue(await self.store.setting('browser_blocked'))
+        await self.store.set('browser_blocked', False)
+        _, unblocked = await self.telegram._response('/status')
+        self.assertNotIn('Нужно заново войти в HH', unblocked)
 
     async def test_status_explains_delivery_pause_and_attention_block(self):
-        self.store.discover(Vacancy('42', 'Python', 'Python'))
-        before = self.store.get('42')
+        await self.store.discover('hh', Vacancy('42', 'Python', 'Python'))
+        before = await self.store.get('42')
         self.updates = [message(1, '/status')]
         await self.telegram.poll_once()
-        response = self.store.pending_messages()[0]['text']
+        response = (await self.store.pending_messages())[0]['text']
         self.assertIn('Скрипт работает', response)
         self.assertIn('Пауза доставки: да', response)
         self.assertIn('Доставка уведомлений приостановлена', response)
-        self.assertEqual(self.store.get('42'), before)
-        self.assertTrue(self.store.is_paused())
-        self.store.set('browser_blocked', True)
-        self.store.set('attention_reason', 'Нужно заново войти в HH')
-        blocked = self.telegram._response('/status')[1]
+        self.assertEqual(await self.store.get('42'), before)
+        self.assertTrue(await self.store.is_paused())
+        await self.store.set('browser_blocked', True)
+        await self.store.set('attention_reason', 'Нужно заново войти в HH')
+        _, blocked = await self.telegram._response('/status')
         self.assertIn('Нужно заново войти в HH', blocked)
         self.assertIn('доступ', blocked.lower())
 
     async def test_delivery_only_sends_replies_and_legacy_success(self):
-        self.store.enqueue('Автоматическое событие — не отправлять')
-        self.store.enqueue('Ответ по запросу', kind='reply')
-        self.store.enqueue('Legacy подтверждение отклика', kind='success')
-        self.store.pause(False)
-        self.store.discover(Vacancy('43', 'Уточнить формат работы', 'Python'))
-        self.store.decide('43', 'needs_clarification', 'Не подтверждена удалённая работа')
+        await self.store.enqueue('Автоматическое событие — не отправлять')
+        await self.store.enqueue('Ответ по запросу', kind='reply')
+        await self.store.enqueue('Legacy подтверждение отклика', kind='success')
+        await self.store.pause(False)
+        await self.store.discover('hh', Vacancy('43', 'Уточнить формат работы', 'Python'))
+        await self.store.decide('43', 'needs_clarification', 'Не подтверждена удалённая работа')
         self.updates = [message(1, '/clarifications')]
         await self.telegram.poll_once()
         for _ in range(4):
-            self.store.set('telegram_next_delivery', 0)
+            await self.store.set('telegram_next_delivery', 0)
             await self.telegram.flush()
         sent = [data['text'] for method, data in self.requests if method == 'sendMessage']
         self.assertEqual(len(sent), 3)
@@ -283,31 +301,29 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
                             for method, data in self.requests if method == 'sendMessage'))
 
     async def test_delivery_pause_holds_messages_in_outbox(self):
-        self.store.enqueue('Сообщение на паузе', kind='reply')
+        await self.store.enqueue('Сообщение на паузе', kind='reply')
         await self.telegram.flush()
         self.assertFalse(any(method == 'sendMessage' for method, _ in self.requests))
-        self.assertEqual(len(self.store.pending_messages()), 1)
-        self.store.pause(False)
-        self.store.set('telegram_next_delivery', 0)
+        self.assertEqual(len(await self.store.pending_messages()), 1)
+        await self.store.pause(False)
+        await self.store.set('telegram_next_delivery', 0)
         await self.telegram.flush()
         self.assertTrue(any(method == 'sendMessage' for method, _ in self.requests))
-        self.assertEqual(self.store.pending_messages(), [])
+        self.assertEqual(await self.store.pending_messages(), [])
 
     async def test_all_retired_commands_leave_work_state_and_jobs_unchanged(self):
-        self.store.discover(Vacancy('42', 'Python', 'Python'))
-        self.store.decide('42', 'rejected', 'Не подходит')
-        self.store.pause(False)
-        self.store.set('browser_blocked', True)
-        before = self.store.get('42')
-        commands = ('/search', '/pause', '/resume', '/reconcile', '/requeue 42', '/queue', '/settings')
+        await self.store.discover('hh', Vacancy('42', 'Python', 'Python'))
+        await self.store.decide('42', 'rejected', 'Не подходит')
+        await self.store.pause(False)
+        await self.store.set('browser_blocked', True)
+        before = await self.store.get('42')
+        commands = ('/pause', '/resume', '/reconcile', '/requeue 42', '/queue', '/settings')
         self.updates = [message(i, command) for i, command in enumerate(commands, 1)]
         await self.telegram.poll_once()
-        self.assertFalse(self.store.is_paused())
-        self.assertTrue(self.store.setting('browser_blocked'))
-        self.assertIsNone(self.store.setting('search_requested'))
-        self.assertIsNone(self.store.setting('reconcile_requested'))
-        self.assertEqual(self.store.get('42'), before)
-        for reply in self.store.pending_messages():
+        self.assertFalse(await self.store.is_paused())
+        self.assertTrue(await self.store.setting('browser_blocked'))
+        self.assertEqual(await self.store.get('42'), before)
+        for reply in await self.store.pending_messages():
             self.assertIn('/status', reply['text'])
 
     async def test_long_poll_is_async_and_uses_bounded_timeout(self):
@@ -329,8 +345,8 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_delivery_splits_unicode_persists_chunk_progress_and_rate_limits(self):
         text = '🙂' * 3000 + '\n' + 'я' * 3000
-        self.store.enqueue(text, kind='reply')
-        self.store.pause(False)
+        await self.store.enqueue(text, kind='reply')
+        await self.store.pause(False)
         self.send_results = [httpx.Response(200, json={'ok': True, 'result': {'message_id': 1}}),
                              httpx.Response(503, json={'ok': False, 'description': 'secret-url'})]
         with patch('job_finder.telegram.time.time', return_value=1000):
@@ -342,9 +358,7 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
         with patch('job_finder.telegram.time.time', return_value=1002):
             with self.assertRaises(TelegramError):
                 await self.telegram.flush()
-        self.store.close()
-        self.store = Store(self.config.db_path)
-        self.telegram = Telegram(self.config, self.store, http_client=self.client)
+        await self.reconnect()
         with patch('job_finder.telegram.time.time', return_value=2000):
             await self.telegram.flush()
         with patch('job_finder.telegram.time.time', return_value=2002):
@@ -353,7 +367,7 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sends[1]['text'], sends[2]['text'])
         self.assertNotEqual(sends[0]['text'], sends[2]['text'])
         self.assertEqual(sends[0]['text'] + sends[2]['text'] + sends[3]['text'], text)
-        self.assertEqual(self.store.pending_messages(), [])
+        self.assertEqual(await self.store.pending_messages(), [])
         self.assertTrue(all(data['chat_id'] == 123 and 'parse_mode' not in data for data in sends))
 
     async def test_poll_429_persists_bounded_retry_and_never_throws_secret_description(self):
@@ -361,14 +375,14 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
             'description': 'private-token', 'parameters': {'retry_after': 999999}})
         with patch('job_finder.telegram.time.time', return_value=1000):
             await self.telegram.poll_once()
-        self.assertEqual(self.store.setting('telegram_next_poll'), 4600)
+        self.assertEqual(await self.store.setting('telegram_next_poll'), 4600)
         with patch('job_finder.telegram.time.time', return_value=1001):
             await self.telegram.poll_once()
         self.assertEqual(len(self.requests), 1)
 
     async def test_delivery_429_retries_same_chunk_after_delay(self):
-        self.store.enqueue('Unsent letter', kind='reply')
-        self.store.pause(False)
+        await self.store.enqueue('Unsent letter', kind='reply')
+        await self.store.pause(False)
         self.send_results = [httpx.Response(200, json={'ok': False, 'error_code': 429,
             'parameters': {'retry_after': 10}})]
         with patch('job_finder.telegram.time.time', return_value=1000):
@@ -376,21 +390,21 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
         with patch('job_finder.telegram.time.time', return_value=1009):
             await self.telegram.flush()
         self.assertEqual(len(self.requests), 1)
-        self.assertEqual(len(self.store.pending_messages()), 1)
+        self.assertEqual(len(await self.store.pending_messages()), 1)
         with patch('job_finder.telegram.time.time', return_value=1010):
             await self.telegram.flush()
-        self.assertEqual(self.store.pending_messages(), [])
+        self.assertEqual(await self.store.pending_messages(), [])
 
     async def test_history_shows_latest_twenty_entries(self):
         for number in range(200, 225):
-            self.store.discover(Vacancy(str(number), 'History vacancy ' + str(number), 'Python'))
-            self.store.decide(str(number), 'rejected', 'Отсеяна правилами')
-            with self.store.conn:
-                self.store.conn.execute('UPDATE jobs SET created=? WHERE id=?',
-                                        ('2027-01-01T00:00:' + str(number - 200).zfill(2), str(number)))
+            await self.store.discover('hh', Vacancy(str(number), 'History vacancy ' + str(number), 'Python'))
+            await self.store.decide(str(number), 'rejected', 'Отсеяна правилами')
+            await self.store._conn.execute('UPDATE jobs SET created=? WHERE id=?',
+                                           ('2027-01-01T00:00:' + str(number - 200).zfill(2), 'hh:' + str(number)))
+        await self.store._conn.commit()
         self.updates = [message(1, '/history')]
         await self.telegram.poll_once()
-        response = self.store.pending_messages()[0]['text']
+        response = (await self.store.pending_messages())[0]['text']
         self.assertIn('History vacancy 224', response)
         self.assertNotIn('History vacancy 200', response)
 
@@ -401,7 +415,7 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
                 await self.telegram.poll_once()
             await self.telegram.poll_once()
         self.assertEqual(len(self.requests), 1)
-        self.assertGreater(self.store.setting('telegram_next_poll'), 1000)
+        self.assertGreater(await self.store.setting('telegram_next_poll'), 1000)
 
     async def test_callback_429_stops_more_acks_without_dispatching_old_commands(self):
         calls = []
@@ -417,9 +431,7 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
             with patch('job_finder.telegram.time.time', return_value=1000):
                 await Telegram(self.config, self.store, http_client=client).poll_once()
         self.assertEqual(calls, ['getUpdates', 'answerCallbackQuery'])
-        self.assertIsNone(self.store.setting('search_requested'))
-        self.assertIsNone(self.store.setting('reconcile_requested'))
-        self.assertEqual(self.store.setting('telegram_offset'), 3)
+        self.assertEqual(await self.store.setting('telegram_offset'), 3)
 
     async def test_transport_errors_are_sanitized_and_leave_offset_untouched(self):
         async def fail(request):
@@ -430,4 +442,4 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
                 await telegram.poll_once()
             self.assertNotIn('secret', str(raised.exception))
             self.assertNotIn('private-token', str(raised.exception))
-            self.assertIsNone(self.store.setting('telegram_offset'))
+            self.assertIsNone(await self.store.setting('telegram_offset'))

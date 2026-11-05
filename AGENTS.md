@@ -7,7 +7,7 @@ This project uses **bd** (beads) for issue tracking. Run `bd prime` for full wor
 - **Task tracking: everything through bd (beads).** The technical plan is decomposed there: epic `job_finder_v2-0te` (stages 0–8). The authoritative plan document is [docs/knowledge-base/12-multiplatform-plan.md](docs/knowledge-base/12-multiplatform-plan.md) — keep it in sync with beads.
 - **One commit per bead task.** Each bead issue closes with its own git commit; put the issue id in the commit message, e.g. `1b: remove auto-apply (job_finder_v2-0te.3)`. Do not mix several issues in one commit.
 - **Workflow:** `bd update <id> --claim` before starting work; `bd close <id>` only after the issue's acceptance criteria are met and tests pass.
-- **Tests must be green before closing:** `PLAYWRIGHT_BROWSERS_PATH=.cache/ms-playwright .venv/bin/python -m unittest discover -s tests` (baseline: 109 tests after 1b/1c).
+- **Tests must be green before closing:** `PLAYWRIGHT_BROWSERS_PATH=.cache/ms-playwright .venv/bin/python -m unittest discover -s tests` (baseline: 124 tests after 1b/1c/2).
 - **Stack:** Python 3.12+ (venv is 3.12.12), SQLite (aiosqlite planned), Telegram Bot API. `bd` CLI: `~/.local/bin/bd` — add `~/.local/bin` to PATH in shells.
 
 > **Architecture in one line:** Issues live in a local Dolt database

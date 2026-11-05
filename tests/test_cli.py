@@ -14,10 +14,10 @@ from unittest.mock import patch
 
 from dotenv import dotenv_values
 from job_finder.__main__ import api_command, main, process_lock, save_env_values
+from job_finder.async_store import AsyncStore
 from job_finder.config import Config
 from job_finder.store import Store
 from job_finder.telegram import TelegramError
-from tests.test_engine import Site, Writer
 
 
 class CliTests(unittest.TestCase):
@@ -152,89 +152,92 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         (root/'.state'/'api-token.json').write_text(
             json.dumps({'access_token':'USERT','refresh_token':'R','access_expires_at':9999999999}))
 
-    async def test_run_uses_api_source(self):
+    def fake_config(self, root, with_telegram=True):
+        env = {'SOURCES': 'fake'}
+        with patch.dict(os.environ, env, clear=True):
+            config = Config.load(root)
+        if with_telegram:
+            config = replace(config, telegram_token='123:test-token', owner_id=123)
+        return config
+
+    class OfflineBot:
+        async def poll_once(self):
+            raise TelegramError('Unavailable')
+        async def flush(self):
+            raise TelegramError('Unavailable')
+
+    async def request_round(self, config):
+        requester = AsyncStore(config.db_path)
+        await requester.start()
+        try:
+            await requester.round_request()
+        finally:
+            await requester.close()
+
+    async def wait_status(self, config, job_id, status, timeout=5):
+        db = Store(config.db_path)
+        try:
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                row = db.get(job_id)
+                if row and row['status'] == status:
+                    return
+                await asyncio.sleep(0.05)
+            self.assertEqual((db.get(job_id) or {}).get('status'), status)
+        finally:
+            db.close()
+
+    async def test_run_processes_search_round_and_prepares(self):
         with tempfile.TemporaryDirectory() as temp:
-            root=Path(temp)
-            with patch.dict(os.environ, {}, clear=True):
-                config=replace(Config.load(root),telegram_token='123:test-token',owner_id=123)
-            self.write_token(root)
-            class ApiSite(Site):
-                async def close(self):
-                    pass
-            class OfflineBot:
-                async def poll_once(self):
-                    raise TelegramError('Unavailable')
-                async def flush(self):
-                    raise TelegramError('Unavailable')
-            with patch('job_finder.hh.HHClient',return_value=ApiSite()), \
-                    patch('job_finder.letters.LetterGenerator',return_value=Writer()), \
-                    patch('job_finder.telegram.Telegram',return_value=OfflineBot()), \
-                    patch.dict(os.environ, {}, clear=True):
-                task=asyncio.create_task(api_command(config,'run'))
+            config = self.fake_config(Path(temp))
+            with patch('job_finder.telegram.Telegram', return_value=self.OfflineBot()), \
+                    patch.dict(os.environ, {'SOURCES': 'fake'}, clear=True):
+                task = asyncio.create_task(api_command(config, 'run'))
                 try:
-                    db=Store(config.db_path)
-                    try:
-                        deadline=time.monotonic()+5
-                        while time.monotonic()<deadline:
-                            row=db.get('123')
-                            if row and row['status']=='ready':
-                                break
-                            await asyncio.sleep(0.05)
-                        self.assertEqual(db.get('123')['status'],'ready')
-                    finally:
-                        db.close()
+                    await self.request_round(config)
+                    await self.wait_status(config, 'fake:1001', 'ready')
                 finally:
                     task.cancel()
-                    await asyncio.gather(task,return_exceptions=True)
+                    await asyncio.gather(task, return_exceptions=True)
+
+    async def test_search_command_runs_round_without_preparation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            config = self.fake_config(Path(temp), with_telegram=False)
+            with patch.dict(os.environ, {'SOURCES': 'fake'}, clear=True):
+                await api_command(config, 'search')
+            db = Store(config.db_path)
+            try:
+                self.assertEqual(db.get('fake:1001')['status'], 'found')
+                self.assertEqual(db.get('fake:1003')['status'], 'found')
+                self.assertEqual(len(db.rows(['found'], limit=10)), 3)
+                self.assertIsNotNone(db.setting('last_search:fake'))
+            finally:
+                db.close()
 
     async def test_run_without_api_token_fails_with_guidance(self):
         with tempfile.TemporaryDirectory() as temp:
-            root=Path(temp)
             with patch.dict(os.environ, {}, clear=True):
-                config=replace(Config.load(root),telegram_token='123:test-token',owner_id=123)
+                config = replace(Config.load(Path(temp)),
+                                 telegram_token='123:test-token', owner_id=123)
             with self.assertRaises(ValueError) as caught:
-                await api_command(config,'run')
+                await api_command(config, 'run')
             self.assertIn('api-login', str(caught.exception))
 
     async def test_telegram_outage_does_not_stop_local_search_or_preparation(self):
         with tempfile.TemporaryDirectory() as temp:
-            root=Path(temp)
-            with patch.dict(os.environ, {}, clear=True):
-                config=replace(Config.load(root),telegram_token='123:test-token',owner_id=123)
-            self.write_token(root)
-            polled,delivered,prepared=asyncio.Event(),asyncio.Event(),asyncio.Event()
-            class OfflineBot:
-                async def poll_once(self):
-                    polled.set()
-                    raise TelegramError('Unavailable')
-                async def flush(self):
-                    delivered.set()
-                    raise TelegramError('Unavailable')
-            class WaitingSite(Site):
-                async def close(self):
-                    pass
-                async def search(self,max_pages):
-                    await asyncio.gather(polled.wait(),delivered.wait())
-                    return await super().search(max_pages)
-            class WatchingWriter(Writer):
-                async def generate(self,job):
-                    letter=await super().generate(job)
-                    prepared.set()
-                    return letter
-            with patch('job_finder.hh.HHClient',return_value=WaitingSite()), \
-                    patch('job_finder.letters.LetterGenerator',return_value=WatchingWriter()), \
-                    patch('job_finder.telegram.Telegram',return_value=OfflineBot()), \
-                    patch.dict(os.environ, {}, clear=True):
-                task=asyncio.create_task(api_command(config,'run'))
+            config = self.fake_config(Path(temp))
+            with patch('job_finder.telegram.Telegram', return_value=self.OfflineBot()), \
+                    patch.dict(os.environ, {'SOURCES': 'fake'}, clear=True):
+                task = asyncio.create_task(api_command(config, 'run'))
                 try:
-                    await asyncio.wait_for(prepared.wait(),timeout=1)
-                    db=Store(config.db_path)
+                    await self.request_round(config)
+                    await self.wait_status(config, 'fake:1001', 'ready')
+                    db = Store(config.db_path)
                     try:
-                        # Пауза — это пауза доставки; поиск и подготовка идут.
+                        # Пауза доставки не мешает поиску и подготовке.
                         self.assertTrue(db.is_paused())
-                        self.assertEqual(db.get('123')['status'],'ready')
                     finally:
                         db.close()
                 finally:
                     task.cancel()
-                    await asyncio.gather(task,return_exceptions=True)
+                    await asyncio.gather(task, return_exceptions=True)

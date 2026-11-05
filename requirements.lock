@@ -1,3 +1,4 @@
+aiosqlite==0.22.1
 anyio==4.12.1
 certifi==2026.10.19
 cffi==2.0.0

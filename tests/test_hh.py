@@ -11,8 +11,8 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 
 from job_finder.config import Config
-from job_finder.hh import (HHAPIError, HHClient, TokenStore, authorize,
-                            trust_flags, vacancy_from_json)
+from job_finder.adapters.hh import (HHAPIError, HHClient, TokenStore, authorize,
+                                    trust_flags, vacancy_from_json)
 from job_finder.models import Vacancy
 
 VACANCY_JSON = {
@@ -142,10 +142,10 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
                                              "items": [{"id": item} for item in items]})
         self.router.add("GET", "/vacancies", handler)
         report = await self.client().search(max_pages=100)
-        self.assertEqual(report["pages"], 3)
-        self.assertEqual(len(report["ids"]), 250)
-        self.assertEqual(report["ids"], [str(item) for item in range(1, 251)])
-        self.assertFalse(report["incomplete"])
+        ids = [hit.native_id for hit in report.hits]
+        self.assertEqual(len(ids), 250)
+        self.assertEqual(ids, [str(item) for item in range(1, 251)])
+        self.assertFalse(report.incomplete)
 
     async def test_search_splits_experience_when_capped(self):
         def handler(request):
@@ -160,19 +160,20 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             return httpx.Response(200, json={"found": 1, "pages": 1, "items": [{"id": marker}]})
         self.router.add("GET", "/vacancies", handler)
         report = await self.client().search(max_pages=100)
+        ids = [hit.native_id for hit in report.hits]
         for item in ("1001", "1002", "1003", "1004"):
-            self.assertIn(item, report["ids"])
-        self.assertTrue(any("диапазона" in note for note in report["notes"]))
+            self.assertIn(item, ids)
+        self.assertTrue(any("диапазона" in note for note in report.notes))
 
-    async def test_read_converts_and_missing_is_closed(self):
+    async def test_fetch_converts_and_missing_is_closed(self):
         self.router.add("GET", "/vacancies/123", lambda request: httpx.Response(200, json=VACANCY_JSON))
         self.router.add("GET", "/vacancies/999",
                         lambda request: httpx.Response(404, json={"errors": [{"type": "not_found"}]}))
         client = self.client()
-        vacancy = await client.read("123")
+        vacancy = await client.fetch("123")
         self.assertIsInstance(vacancy, Vacancy)
         self.assertEqual(vacancy.title, "Python Developer")
-        closed = await client.read("999")
+        closed = await client.fetch("999")
         self.assertTrue(closed.closed)
         await client.close()
 

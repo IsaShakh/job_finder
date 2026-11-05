@@ -61,5 +61,9 @@ class AttentionRequired(Exception):
     """Authentication, challenge or site change requiring a human."""
 
 
+class RateLimited(Exception):
+    """Источник временно ограничил доступ; повторить позже по таймеру."""
+
+
 class VacancyUnavailable(Exception):
     """HH explicitly denies access to one vacancy for the signed-in account."""

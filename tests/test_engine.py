@@ -1,184 +1,212 @@
-import tempfile
 import asyncio
+import tempfile
 import time
-from dataclasses import replace
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
+
+from job_finder.adapters.base import SearchHit, SearchReport
+from job_finder.async_store import AsyncStore
+from job_finder.config import Config
 from job_finder.engine import Engine, TEST_LABEL
-from job_finder.models import AttentionRequired, Letter, Salary, VacancyUnavailable
-from job_finder.store import Store
+from job_finder.models import AttentionRequired, Letter, RateLimited, Salary, Vacancy
 from tests.test_rules import vacancy
-
-
-class Site:
-    def __init__(self):
-        self.current=vacancy(salary=Salary(200000))
-        self.read_error=None
-
-    async def search(self, max_pages):
-        return {"ids":["123","137924141"],"pages":1,"incomplete":False,"notes":[]}
-
-    async def read(self, job_id):
-        if self.read_error:
-            raise self.read_error
-        return replace(self.current,id=job_id)
 
 
 class Writer:
     async def generate(self, job):
-        return Letter("Точное письмо",["python_backend"],["Знаком с Kafka"],["Kafka: пример очереди"])
+        return Letter("Точное письмо", ["python_backend"], [], [])
+
+
+class Probe:
+    """Программируемый источник для тестов раунда."""
+    def __init__(self, name, hits=(), failures=0, fetch_for=None):
+        self.name = name
+        self.hits = hits
+        self.failures = failures
+        self.calls = 0
+        self.fetch_for = fetch_for or {}
+        self.closed = False
+
+    async def search(self, criteria, since):
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise RateLimited("лимит")
+        return SearchReport(hits=[SearchHit(native_id=str(item)) for item in self.hits],
+                            incomplete=False, notes=[])
+
+    async def fetch(self, native_id):
+        if native_id in self.fetch_for:
+            return self.fetch_for[native_id]
+        return vacancy(id=native_id, salary=Salary(200000))
+
+    async def close(self):
+        self.closed = True
 
 
 class EngineTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
-        self.temp=tempfile.TemporaryDirectory()
-        self.db=Store(Path(self.temp.name)/"queue.db")
-        self.site=Site()
-        self.config=SimpleNamespace(max_search_pages=5,search_interval=21600)
-        self.engine=Engine(self.config,self.db,self.site,Writer())
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        with patch.dict(__import__("os").environ, {}, clear=True):
+            self.config = Config.load(Path(self.temp.name))
+        self.store = AsyncStore(self.config.db_path)
+        await self.store.start()
+        self.addAsyncCleanup(self.store.close)
 
-    async def asyncTearDown(self):
-        self.db.close()
-        self.temp.cleanup()
+    def engine(self, adapters, writer=None):
+        return Engine(self.config, self.store, adapters, writer or Writer())
 
-    async def test_local_start_searches_immediately_and_clears_legacy_flags(self):
-        self.db.pause(True)
-        self.db.set('last_search',time.time())
-        self.db.set('browser_blocked',True)
-        self.db.set('attention_reason','Старый вход')
-        self.db.set('search_requested',True)
-        self.db.set('reconcile_requested',True)
-        await self.engine.start()
-        self.assertIsNotNone(self.db.get('123'))
-        # Пауза — это пауза доставки; запуск её не трогает.
-        self.assertTrue(self.db.is_paused())
-        self.assertFalse(self.db.setting('browser_blocked'))
-        self.assertFalse(self.db.setting('search_requested'))
-        self.assertFalse(self.db.setting('reconcile_requested'))
-        self.assertEqual(self.db.pending_messages(),[])
+    async def test_start_requeues_interrupted_active_round(self):
+        await self.store.round_request()
+        round_id = await self.store.round_next()
+        source = Probe("probe", hits=(1001,))
+        engine = self.engine([source])
+        await engine.start()
+        self.assertEqual(await self.store.round_next(), round_id)
 
-    async def test_run_calls_start_without_waiting_for_a_telegram_command(self):
-        self.db.set('last_search',time.time())
-        searched=asyncio.Event()
-        original_search=self.site.search
-        async def search(max_pages):
-            report=await original_search(max_pages)
-            searched.set()
-            return report
-        self.site.search=search
-        task=asyncio.create_task(self.engine.run())
-        try:
-            await asyncio.wait_for(searched.wait(),timeout=0.2)
-            self.assertIsNotNone(self.db.get('123'))
-        finally:
-            task.cancel()
-            await asyncio.gather(task,return_exceptions=True)
+    async def test_round_polls_sources_in_parallel_and_commits_atomically(self):
+        # Если опрос был бы последовательным, первый источник завис бы
+        # на ожидании второго и тест упал по таймауту.
+        gate = SimpleNamespace(started=0, second=asyncio.Event())
+        class GateProbe(Probe):
+            async def search(self, criteria, since):
+                gate.started += 1
+                if gate.started == 1:
+                    await asyncio.wait_for(gate.second.wait(), timeout=1)
+                else:
+                    gate.second.set()
+                return await super().search(criteria, since)
+        first = GateProbe("first", hits=(1001, 1002))
+        second = GateProbe("second", hits=(2001,))
+        await self.store.round_request()
+        engine = self.engine([first, second])
+        await engine.run_pending_rounds()
+        self.assertEqual(gate.started, 2)
+        self.assertEqual(first.calls, 1)
+        self.assertEqual(second.calls, 1)
+        self.assertEqual((await self.store.get("first:1001"))["status"], "found")
+        self.assertEqual((await self.store.get("second:2001"))["status"], "found")
+        self.assertIsNotNone(await self.store.setting("last_search:first"))
+        self.assertIsNotNone(await self.store.setting("search_report:second"))
+        cursor = await self.store._conn.execute("SELECT state FROM round_requests")
+        states = [row[0] for row in await cursor.fetchall()]
+        await cursor.close()
+        self.assertEqual(states, ["done"])
+        # Сводка раунда — обычное событие, не доставляется проактивно.
+        self.assertEqual(await self.store.pending_messages(), [])
 
-    async def test_local_start_prepares_found_jobs_without_submission(self):
-        await self.engine.start()
-        await self.engine.tick()
-        await self.engine.tick()
-        self.assertEqual(self.db.get('123')['status'],'ready')
-        self.assertIsNotNone(self.db.get('123')['letter'])
+    async def test_round_isolates_rate_limited_source_and_resumes(self):
+        source = Probe("probe", hits=(1001,), failures=1)
+        await self.store.round_request()
+        engine = self.engine([source])
+        await engine.run_pending_rounds()
+        # Раунд в waiting, строк нет, таймер повтора установлен.
+        self.assertEqual(await self.store.round_resumable(), None)
+        self.assertIsNone(await self.store.get("probe:1001"))
+        self.assertGreater(await self.store.setting("next_retry:probe"), time.time())
+        # Таймер прошёл — раунд возобновляется и доигрывается.
+        await self.store.set("next_retry:probe", time.time() - 1)
+        self.assertTrue(await engine.resume_waiting())
+        self.assertEqual((await self.store.get("probe:1001"))["status"], "found")
 
-    async def test_search_runs_while_delivery_is_paused(self):
-        self.db.pause(True)
-        await self.engine.tick()
-        self.assertIsNotNone(self.db.get('123'))
-        self.assertTrue(self.db.is_paused())
+    async def test_round_isolates_crashed_source(self):
+        class Crash:
+            name = "crash"
+            async def search(self, criteria, since):
+                raise RuntimeError("boom")
+            async def fetch(self, native_id):
+                return vacancy(id=native_id)
+            async def close(self):
+                pass
+        await self.store.round_request()
+        engine = self.engine([Crash()])
+        await engine.run_pending_rounds()
+        self.assertGreater(await self.store.setting("next_retry:crash"), time.time())
+        cursor = await self.store._conn.execute("SELECT text FROM outbox ORDER BY id")
+        events = [row["text"] for row in await cursor.fetchall()]
+        await cursor.close()
+        self.assertTrue(any("crash" in text for text in events))
 
-    async def test_legacy_request_flags_cannot_clear_an_access_block(self):
-        self.db.set('browser_blocked',True)
-        self.db.set('search_requested',True)
-        self.db.set('reconcile_requested',True)
-        await self.engine.tick()
-        self.assertTrue(self.db.setting('browser_blocked'))
-        self.assertIsNone(self.db.get('123'))
+    async def test_prepare_ready_with_letter_and_test_label(self):
+        job = vacancy(id="1001", salary=Salary(200000), test_required=True)
+        source = Probe("probe", fetch_for={"1001": job})
+        await self.store.discover("probe", vacancy(id="1001"))
+        engine = self.engine([source])
+        await engine.prepare("probe:1001")
+        row = await self.store.get("probe:1001")
+        self.assertEqual(row["status"], "ready")
+        self.assertIsNotNone(row["letter"])
+        self.assertIn(TEST_LABEL, row["reason"])
 
-    async def test_discovery_includes_all_ids_and_preserves_pilot(self):
-        await self.engine.search()
-        self.assertEqual(self.db.get("123")["status"],"found")
-        self.assertEqual(self.db.get("137924141")["status"],"skipped")
-        self.assertEqual(self.db.pending_messages(),[])
+    async def test_prepare_clarification_and_rejection(self):
+        unclear = vacancy(id="1001", remote=None)
+        not_python = vacancy(id="1002", title="Java developer",
+                             description="Java", salary=Salary(200000))
+        source = Probe("probe", fetch_for={"1001": unclear, "1002": not_python})
+        await self.store.discover("probe", vacancy(id="1001"))
+        await self.store.discover("probe", vacancy(id="1002"))
+        engine = self.engine([source])
+        await engine.prepare("probe:1001")
+        await engine.prepare("probe:1002")
+        self.assertEqual((await self.store.get("probe:1001"))["status"], "needs_clarification")
+        self.assertEqual((await self.store.get("probe:1002"))["status"], "rejected")
 
-    async def test_preparation_clarification_is_saved_without_notification(self):
-        self.site.current=replace(self.site.current,remote=None)
-        self.db.discover(self.site.current)
-        await self.engine.prepare('123')
-        self.assertEqual(self.db.get('123')['status'],'needs_clarification')
-        self.assertTrue(self.db.get('123')['reason'])
-        self.assertEqual(self.db.pending_messages(),[])
+    async def test_prepare_error_is_saved_without_notification(self):
+        class Crash:
+            name = "crash"
+            async def search(self, criteria, since):
+                return SearchReport(hits=[], incomplete=False, notes=[])
+            async def fetch(self, native_id):
+                raise RuntimeError("read failed")
+            async def close(self):
+                pass
+        await self.store.discover("crash", vacancy(id="1001"))
+        engine = self.engine([Crash()])
+        await engine.prepare("crash:1001")
+        self.assertEqual((await self.store.get("crash:1001"))["status"], "error")
+        self.assertEqual(await self.store.pending_messages(), [])
 
-    async def test_preparation_error_is_saved_without_notification(self):
-        self.db.discover(self.site.current)
-        self.site.read_error=RuntimeError('read failed')
-        await self.engine.prepare('123')
-        self.assertEqual(self.db.get('123')['status'],'error')
-        self.assertEqual(self.db.pending_messages(),[])
+    async def test_prepare_unknown_source_is_error(self):
+        await self.store.discover("hh", vacancy(id="1001"))
+        engine = self.engine([])
+        await engine.prepare("hh:1001")
+        row = await self.store.get("hh:1001")
+        self.assertEqual(row["status"], "error")
+        self.assertIn("Неизвестный источник", row["reason"])
 
-    async def test_unavailable_vacancy_requires_clarification_and_next_job_is_prepared(self):
-        self.db.discover(self.site.current)
-        self.db.discover(replace(self.site.current,id='456'))
-        self.db.pause(False)
-        self.db.set('last_search',time.time())
-        original_read=self.site.read
-        async def read(job_id):
-            if job_id=='123':
-                raise VacancyUnavailable('Вам недоступна эта вакансия')
-            return await original_read(job_id)
-        self.site.read=read
-        await self.engine.tick()
-        self.assertEqual(self.db.get('123')['status'],'needs_clarification')
-        self.assertEqual(self.db.get('123')['reason'],'Вам недоступна эта вакансия')
-        self.assertFalse(self.db.is_paused())
-        self.assertFalse(self.db.setting('browser_blocked',False))
-        self.assertEqual(self.db.pending_messages(),[])
-        await self.engine.tick()
-        self.assertEqual(self.db.get('456')['status'],'ready')
-
-    async def test_test_required_is_a_label_not_a_rejection(self):
-        self.site.current=vacancy(salary=Salary(200000),test_required=True)
-        self.db.discover(self.site.current)
-        await self.engine.prepare('123')
-        self.assertEqual(self.db.get('123')['status'],'ready')
-        self.assertIn(TEST_LABEL,self.db.get('123')['reason'])
-
-    async def test_test_label_added_to_clarification_reason(self):
-        self.site.current=vacancy(salary=Salary(200000),test_required=True,remote=None)
-        self.db.discover(self.site.current)
-        await self.engine.prepare('123')
-        self.assertEqual(self.db.get('123')['status'],'needs_clarification')
-        self.assertIn(TEST_LABEL,self.db.get('123')['reason'])
-
-    async def test_closed_job_does_not_block_next_job(self):
-        self.db.discover(self.site.current)
-        self.db.discover(vacancy(id='456',salary=Salary(200000)))
-        self.site.current=replace(self.site.current,closed=True)
-        await self.engine.prepare('123')
-        self.assertEqual(self.db.get('123')['status'],'closed')
-        self.site.current=replace(self.site.current,closed=False)
-        await self.engine.prepare('456')
-        self.assertEqual(self.db.get('456')['status'],'ready')
-
-    async def test_daily_digests_do_not_send_unsolicited_notifications(self):
-        self.db.set('digest_day','2000-01-01')
-        self.db.set('last_search',time.time())
-        await self.engine.tick()
-        self.db.discover(self.site.current)
-        self.db.decide('123','rejected','Python не упомянут')
-        # Day change after the first report; the event is now from yesterday.
-        with self.db.conn:
-            self.db.conn.execute("UPDATE jobs SET updated='2000-01-01T12:00:00+00:00' WHERE id='123'")
-        self.db.set('digest_day','2000-01-01')
-        await self.engine.tick()
-        self.assertEqual(self.db.pending_messages(),[])
-        self.assertEqual(self.db.get('123')['status'],'rejected')
-        self.assertEqual(self.db.get('123')['reason'],'Python не упомянут')
+    async def test_daily_digest_does_not_send_unsolicited_notifications(self):
+        source = Probe("probe", hits=())
+        engine = self.engine([source])
+        await engine.tick()
+        self.assertIsNotNone(await self.store.setting("digest_day"))
+        self.assertIsNotNone(await self.store.setting("last_digest_at"))
+        self.assertEqual(await self.store.pending_messages(), [])
 
     async def test_attention_pauses_delivery_and_blocks_work(self):
-        self.engine.attention('Нужен вход')
-        self.assertTrue(self.db.is_paused())
-        self.assertTrue(self.db.setting('browser_blocked'))
-        self.assertEqual(self.db.setting('attention_reason'),'Нужен вход')
-        self.assertIsNone(self.db.setting('search_report'))
+        engine = self.engine([])
+        await engine.attention("Нужен вход")
+        self.assertTrue(await self.store.is_paused())
+        self.assertTrue(await self.store.setting("browser_blocked"))
+        self.assertEqual(await self.store.setting("attention_reason"), "Нужен вход")
+
+    async def test_round_since_is_previous_t_start(self):
+        seen = []
+        class Tracking(Probe):
+            async def search(self, criteria, since):
+                seen.append(since)
+                return await super().search(criteria, since)
+        source = Tracking("probe", hits=(1001,))
+        await self.store.round_request()
+        engine = self.engine([source])
+        await engine.run_pending_rounds()
+        self.assertEqual(seen, [None])
+        first_commit = await self.store.setting("last_search:probe")
+        await self.store.round_request()
+        await engine.run_pending_rounds()
+        self.assertEqual(len(seen), 2)
+        # since второго раунда — t_start предыдущего (водяной знак).
+        self.assertEqual(seen[1], first_commit)
+        self.assertNotEqual(await self.store.setting("last_search:probe"), first_commit)
