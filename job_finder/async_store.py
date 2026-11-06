@@ -21,7 +21,7 @@ import aiosqlite
 
 from .dedupe import DEDUP_COSINE_THRESHOLD, EMBEDDING_K, cosine
 from .models import Letter, Vacancy
-from .store import Store, dump, now
+from .store import STATES, Store, dump, now
 
 
 def _now():
@@ -242,6 +242,18 @@ class AsyncStore:
         """Кнопка карточки нажата: delivered → read (16.2)."""
         return await self._call("mark_read", job_id)
 
+    async def browse_next(self, category, after_job_id=None):
+        """Следующая строка категории просмотра (FIFO по created,id)."""
+        return await self._call("browse_next", category, after_job_id)
+
+    async def mark_browsed(self, job_id):
+        """Карточка показана в просмотре: ready → read + last_read (16.2)."""
+        return await self._call("mark_browsed", job_id)
+
+    async def forget(self, key):
+        """Удалить настройку (кнопка просмотра прикреплена к строке outbox)."""
+        return await self._call("forget", key)
+
     async def set_letter(self, job_id, letter):
         return await self._call("set_letter", job_id, letter)
 
@@ -460,10 +472,13 @@ class AsyncStore:
     async def _op_enqueue(self, text, kind, job_id, cluster_id):
         if kind not in ("event", "reply", "success", "notice", "card"):
             raise ValueError("Неизвестный тип уведомления")
-        await self._conn.execute(
+        cursor = await self._conn.execute(
             "INSERT INTO outbox(text,created,kind,job_id,cluster_id) VALUES(?,?,?,?,?)",
             (text, now(), kind, job_id, cluster_id))
+        message_id = cursor.lastrowid
+        await cursor.close()
         await self._conn.commit()
+        return message_id
 
     async def _op_pending_messages(self):
         cursor = await self._conn.execute(
@@ -588,6 +603,45 @@ class AsyncStore:
         await self._conn.execute(
             "UPDATE jobs SET status='read',last_read=?,updated=? WHERE id=? AND status='delivered'",
             (now(), now(), key))
+        await self._conn.commit()
+
+    async def _op_browse_next(self, category, after_job_id):
+        if category not in STATES:
+            return None
+        if after_job_id:
+            after = Store.key(after_job_id)
+            cursor = await self._conn.execute(
+                "SELECT created FROM jobs WHERE id=?", (after,))
+            row = await cursor.fetchone()
+            await cursor.close()
+            if row is None:
+                after = None
+        else:
+            after = None
+        if after:
+            cursor = await self._conn.execute(
+                "SELECT id FROM jobs WHERE status=? AND"
+                " (created > ? OR (created = ? AND id > ?))"
+                " ORDER BY created, id LIMIT 1",
+                (category, row[0], row[0], after))
+        else:
+            cursor = await self._conn.execute(
+                "SELECT id FROM jobs WHERE status=? ORDER BY created, id LIMIT 1",
+                (category,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        return row[0] if row else None
+
+    async def _op_mark_browsed(self, job_id):
+        key = Store.key(job_id)
+        await self._conn.execute(
+            "UPDATE jobs SET status=CASE WHEN status='ready' THEN 'read' ELSE status END,"
+            " last_read=?, updated=? WHERE id=?",
+            (now(), now(), key))
+        await self._conn.commit()
+
+    async def _op_forget(self, key):
+        await self._conn.execute("DELETE FROM settings WHERE key=?", (key,))
         await self._conn.commit()
 
     async def _op_outbox_job(self, message_id):

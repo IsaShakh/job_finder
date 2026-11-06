@@ -17,6 +17,10 @@ import httpx
 
 HELP = ('Команды:\n/search — запустить раунд поиска по всем источникам\n'
         '/status — состояние работы и источников\n'
+        '/browse — категории вакансий и счётчики\n'
+        '/browse <категория> — первая карточка категории (ready, clarification, '
+        'rejected, delivered, read, found, error, closed, skipped)\n'
+        '/next — следующая карточка в последней категории (есть и кнопка)\n'
         '/history — история\n/letter ID — письмо и подготовка\n'
         '/clarifications [страница] — вакансии, требующие уточнения\n'
         '/keep ID — одобрить уточнение (карточка готовится)\n'
@@ -28,6 +32,15 @@ HELP = ('Команды:\n/search — запустить раунд поиска
 STATUS_LABELS = {'found': 'найдена', 'read': 'прочитана', 'rejected': 'отсеяна',
     'skipped': 'пропущена', 'needs_clarification': 'нужно уточнение',
     'ready': 'готова', 'delivered': 'доставлена', 'error': 'ошибка', 'closed': 'закрыта'}
+
+BROWSE_CATEGORIES = {'ready': 'подходящие', 'needs_clarification': 'требующие уточнения',
+    'rejected': 'отсеянные правилами', 'delivered': 'доставленные',
+    'read': 'прочитанные', 'found': 'найденные (не обработаны)',
+    'error': 'ошибки', 'closed': 'закрытые', 'skipped': 'пропущенные'}
+
+BROWSE_ALIASES = {'clarification': 'needs_clarification', 'clarifications': 'needs_clarification',
+                  'уточнения': 'needs_clarification',
+                  'подходящие': 'ready', 'готовые': 'ready'}
 
 ID_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9_:-]{0,119}$')
 
@@ -85,11 +98,13 @@ class Telegram:
             counts = await self.store.counts()
             blocked = await self.store.setting('browser_blocked', False)
             paused = await self.store.is_paused()
+            deliver = await self.store.setting('DELIVER', False)
             lines = ['Скрипт работает; доступ к HH заблокирован.' if blocked else 'Скрипт работает.',
                      'Пауза доставки: ' + ('да' if paused else 'нет'),
                      'Всего: ' + ', '.join(STATUS_LABELS.get(key, key) + ' ' + str(value)
                                            for key, value in sorted(counts.items())),
-                     'Уведомления: по запросу; автоотклик удалён — откликаетесь вы сами.']
+                     'Уведомления о новых вакансиях: ' + ('включены' if deliver
+                     else 'отключены (тихий режим; просмотр: /browse, /next)')]
             if blocked:
                 lines.append('Нужно действие: ' + str(await self.store.setting('attention_reason', 'Проверьте вход и доступ к HH')))
             if paused:
@@ -106,6 +121,14 @@ class Telegram:
             if not reported:
                 lines.append('Результатов поиска пока нет. /search — запустить раунд.')
             return 'status', '\n'.join(lines)
+        if command == '/browse':
+            if len(parts) == 1:
+                return 'browse', ''
+            if len(parts) != 2 or not re.fullmatch(r'[A-Za-zА-Яа-я0-9_]{1,24}', parts[1]):
+                return 'browse', '!!Укажите одну категорию: /browse ready. Список: /browse'
+            return 'browse', parts[1]
+        if command == '/next':
+            return 'next', None
         if command == '/clarifications':
             if len(parts) > 2 or (len(parts) == 2 and not re.fullmatch(r'[1-9][0-9]{0,8}', parts[1])):
                 return 'clarifications', 'Укажите положительный номер страницы: /clarifications 1'
@@ -185,7 +208,11 @@ class Telegram:
                     await self.store.command(update['update_id'], 'retired_callback')
                 elif authorized and isinstance(raw, str):
                     action, response = await self._response(raw)
-                    if action in ('keep', 'skip', 'unskip'):
+                    if action == 'browse':
+                        response = await self._browse(response)
+                    elif action == 'next':
+                        response = await self._advance(None)
+                    elif action in ('keep', 'skip', 'unskip'):
                         response = await self._manual(action, response)
                     processed += bool(await self.store.command(update['update_id'], action, response))
                 else:
@@ -196,6 +223,10 @@ class Telegram:
                 # Новый формат: 'c:<id строки outbox>' (короткий callback_data).
                 job_id = await self.store.outbox_job(data[2:])
                 await self._handle_card_callback(callback_id, job_id, message)
+                continue
+            if (isinstance(data, str) and data.startswith('n:') and authorized and fresh):
+                # Кнопка «Следующая вакансия»: категория короче лимита 64 байта.
+                await self._handle_next_callback(callback_id, data[2:], message)
                 continue
             if (isinstance(data, str) and data.startswith('card:') and authorized and fresh):
                 # Старый формат (до исправления лимита callback_data).
@@ -227,6 +258,68 @@ class Telegram:
             await self.store.mark_read(job_id)
         await self.store.enqueue(await self.card_text(job_id) if job_id else "Карточка не найдена.",
                                  kind='reply')
+        await self._remove_old_keyboard(message)
+
+    async def _browse(self, argument):
+        """/browse: справка категорий со счётчиками или первая карточка категории."""
+        if not argument:
+            counts = await self.store.counts()
+            lines = ['Категории просмотра — /browse <категория>:']
+            for key, label in BROWSE_CATEGORIES.items():
+                lines.append(key + ' (' + label + '): ' + str(counts.get(key, 0)))
+            lines.append('Следующая вакансия — кнопка под карточкой или /next.')
+            return '\n'.join(lines)
+        if argument.startswith('!!'):
+            return argument[2:]
+        category = BROWSE_ALIASES.get(argument.lower(), argument.lower())
+        if category not in BROWSE_CATEGORIES:
+            return ('Категории нет. Доступно: ' + ', '.join(BROWSE_CATEGORIES)
+                    + '. Список с количеством: /browse')
+        job_id = await self.store.browse_next(category)
+        if job_id is None:
+            return ('В категории «' + BROWSE_CATEGORIES[category]
+                    + '» вакансий нет. Список категорий: /browse')
+        await self._show_card(category, job_id)
+        return None
+
+    async def _advance(self, category):
+        """Следующая карточка категории; category=None — последняя выбранная (/next)."""
+        if category is None:
+            category = await self.store.setting('browse_category')
+            if category is None:
+                return 'Сначала выберите категорию: /browse'
+        if category not in BROWSE_CATEGORIES:
+            return 'Категории нет. Список категорий: /browse'
+        cursor = await self.store.setting('browse_cursor:' + category)
+        job_id = await self.store.browse_next(category, cursor)
+        if job_id is None:
+            return ('В категории «' + BROWSE_CATEGORIES[category]
+                    + '» вакансий больше нет. Другие категории: /browse')
+        await self._show_card(category, job_id)
+        return None
+
+    async def _show_card(self, category, job_id):
+        """Полная карточка в outbox + курсор категории + кнопка на последнем чанке."""
+        text = await self.card_text(job_id)
+        message_id = await self.store.enqueue(text, kind='reply')
+        if message_id:
+            await self.store.set('browse_reply:' + str(message_id), category)
+        await self.store.set('browse_cursor:' + category, job_id)
+        await self.store.set('browse_category', category)
+        await self.store.mark_browsed(job_id)
+
+    async def _handle_next_callback(self, callback_id, category, message):
+        """Кнопка «Следующая вакансия»: ack → следующая карточка категории."""
+        if (isinstance(callback_id, str) and callback_id and len(callback_id) <= 512
+                and time.time() >= await self.store.setting('telegram_next_poll', 0)):
+            try:
+                await self._api('answerCallbackQuery', {'callback_query_id': callback_id},
+                                'telegram_next_poll', timeout=10)
+            except TelegramError:
+                pass
+        response = await self._advance(category)
+        if response:
+            await self.store.enqueue(response, kind='reply')
         await self._remove_old_keyboard(message)
 
     async def _manual(self, action, job_id):
@@ -261,6 +354,14 @@ class Telegram:
             lines.append("Формат: не указан")
         if vacancy.test_required:
             lines.append("Тест: потребуется пройти при отклике")
+        description = (vacancy.description or "").strip()
+        if description:
+            limit = await self.store.setting("card_description_limit", 2000)
+            if type(limit) is not int or limit <= 0:
+                limit = 2000
+            if len(description) > limit:
+                description = description[:limit] + "… (полное описание — по ссылке на вакансию)"
+            lines.append("Описание:\n" + description)
         lines.append("Причина: " + (row["reason"] or "—"))
         if row["grade"]:
             lines.append("Грейд: " + row["grade"] + ((" — " + row["grade_evidence"]) if row["grade_evidence"] else ""))
@@ -323,6 +424,8 @@ class Telegram:
                 raise TelegramError('Нарушен сохранённый прогресс уведомления')
             if index == len(chunks):
                 await self.store.delivered(message['id'])
+                if message['kind'] == 'reply':
+                    await self.store.forget('browse_reply:' + str(message['id']))
                 continue
             payload = {'chat_id': self.config.owner_id, 'text': chunks[index],
                        'link_preview_options': {'is_disabled': True}}
@@ -333,6 +436,14 @@ class Telegram:
                 payload['reply_markup'] = {'inline_keyboard': [[{
                     'text': 'Посмотреть вакансию и письмо',
                     'callback_data': 'c:' + str(message['id'])}]]}
+            if (message['kind'] == 'reply' and message.get('id')
+                    and index + 1 == len(chunks)):
+                # Кнопка просмотра — на последнем чанке карточки (/browse, /next).
+                browse_category = await self.store.setting('browse_reply:' + str(message['id']))
+                if browse_category:
+                    payload['reply_markup'] = {'inline_keyboard': [[{
+                        'text': 'Следующая вакансия',
+                        'callback_data': 'n:' + browse_category}]]}
             result = await self._api('sendMessage', payload, 'telegram_next_delivery', timeout=20)
             if result is None:
                 return 0
@@ -344,6 +455,8 @@ class Telegram:
             await self.store.set('telegram_next_delivery', time.time() + 1.05)
             if index + 1 == len(chunks):
                 await self.store.delivered(message['id'])
+                if message['kind'] == 'reply':
+                    await self.store.forget('browse_reply:' + str(message['id']))
                 if message['kind'] == 'card' and message.get('job_id'):
                     await self.store.delivered_job(message['job_id'])
             return 1

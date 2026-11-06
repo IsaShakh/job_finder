@@ -200,6 +200,100 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('Точное письмо', replies[0])
         self.assertEqual((await self.store.get('hh:42'))['status'], 'read')
 
+    async def test_browse_lists_categories_and_rejects_unknown(self):
+        self.updates = [message(1, '/browse'), message(2, '/browse nope'),
+                        message(3, '/browse ready extra')]
+        await self.telegram.poll_once()
+        replies = [row['text'] for row in await self.store.pending_messages()]
+        self.assertEqual(len(replies), 3)
+        self.assertIn('Категории просмотра', replies[0])
+        self.assertIn('ready (подходящие): 0', replies[0])
+        self.assertIn('Категории нет', replies[1])
+        self.assertIn('Укажите одну категорию', replies[2])
+
+    async def test_browse_ready_shows_first_full_card_and_advances(self):
+        await self.store.discover('hh', Vacancy('1', 'Python dev', 'Описание один',
+                                                company='Акме', remote=True))
+        await self.store.discover('hh', Vacancy('2', 'Python lead', 'Описание два',
+                                                company='Бета', remote=True))
+        for job_id in ('hh:1', 'hh:2'):
+            await self.store.decide(job_id, 'ready', 'подходит')
+            await self.store.set_letter(job_id, Letter('Письмо ' + job_id, ['python_backend'], [], []))
+        self.updates = [message(1, '/browse ready'), message(2, '/next')]
+        await self.telegram.poll_once()
+        replies = [row for row in await self.store.pending_messages()]
+        self.assertEqual(len(replies), 2)
+        self.assertIn('Python dev', replies[0]['text'])
+        self.assertIn('Описание:\nОписание один', replies[0]['text'])
+        self.assertIn('Письмо hh:1', replies[0]['text'])
+        self.assertIn('Python lead', replies[1]['text'])
+        self.assertEqual(await self.store.setting('browse_cursor:ready'), 'hh:2')
+        self.assertEqual(await self.store.setting('browse_category'), 'ready')
+        self.assertEqual((await self.store.get('hh:1'))['status'], 'read')
+        self.assertEqual((await self.store.get('hh:2'))['status'], 'read')
+        browse_key = 'browse_reply:' + str(replies[0]['id'])
+        self.assertEqual(await self.store.setting(browse_key), 'ready')
+
+    async def test_browse_next_button_reaches_end_and_removes_keyboard(self):
+        await self.store.discover('hh', Vacancy('9', 'Python dev', 'Описание', company='Акме'))
+        await self.store.decide('hh:9', 'ready', 'подходит')
+        await self.store.set_letter('hh:9', Letter('Письмо', ['python_backend'], [], []))
+        self.updates = [message(1, '/browse ready'), callback(2, 'n:ready')]
+        await self.telegram.poll_once()
+        self.assertIn(('answerCallbackQuery', {'callback_query_id': 'callback-2'}), self.requests)
+        replies = [row['text'] for row in await self.store.pending_messages()]
+        self.assertEqual(len(replies), 2)
+        self.assertIn('вакансий больше нет', replies[1])
+        self.assertIn(('editMessageReplyMarkup', {'chat_id': 123, 'message_id': 2,
+                                                  'reply_markup': {'inline_keyboard': []}}),
+                      self.requests)
+
+    async def test_browse_card_description_truncated_beyond_limit(self):
+        await self.store.discover('hh', Vacancy('5', 'Python dev',
+                                                'А' * 2500 + 'ХВОСТ', company='Акме'))
+        await self.store.decide('hh:5', 'ready', 'подходит')
+        self.updates = [message(1, '/browse ready')]
+        await self.telegram.poll_once()
+        replies = [row['text'] for row in await self.store.pending_messages()]
+        self.assertEqual(len(replies), 1)
+        self.assertIn('полное описание — по ссылке на вакансию', replies[0])
+        self.assertNotIn('ХВОСТ', replies[0])
+
+    async def test_next_without_category_asks_to_choose(self):
+        self.updates = [message(1, '/next')]
+        await self.telegram.poll_once()
+        replies = [row['text'] for row in await self.store.pending_messages()]
+        self.assertEqual(len(replies), 1)
+        self.assertIn('Сначала выберите категорию', replies[0])
+
+    async def test_status_reports_quiet_delivery_mode(self):
+        self.updates = [message(1, '/status')]
+        await self.telegram.poll_once()
+        replies = [row['text'] for row in await self.store.pending_messages()]
+        self.assertIn('отключены (тихий режим; просмотр: /browse, /next)', replies[0])
+
+    async def test_flush_attaches_next_button_only_to_last_chunk(self):
+        await self.store.pause(False)
+        text = 'Карточка\n' + 'x' * 9000
+        message_id = await self.store.enqueue(text, kind='reply')
+        self.assertTrue(message_id)
+        await self.store.set('browse_reply:' + str(message_id), 'ready')
+        sent = []
+        while True:
+            await self.store.set('telegram_next_delivery', 0)
+            sent.append(await self.telegram.flush())
+            if sent[-1] == 0:
+                break
+        payloads = [data for method, data in self.requests if method == 'sendMessage']
+        self.assertGreaterEqual(len(payloads), 3)
+        with_button = [p for p in payloads if 'reply_markup' in p]
+        self.assertEqual(len(with_button), 1)
+        self.assertEqual(payloads[-1]['reply_markup']['inline_keyboard'][0][0]['text'],
+                         'Следующая вакансия')
+        self.assertEqual(payloads[-1]['reply_markup']['inline_keyboard'][0][0]['callback_data'],
+                         'n:ready')
+        self.assertIsNone(await self.store.setting('browse_reply:' + str(message_id)))
+
     async def test_skip_keep_unskip_commands_with_compound_ids(self):
         await self.store.discover('hh', Vacancy('900001', 'Уточнить', 'Python'))
         await self.store.decide('hh:900001', 'needs_clarification', 'не подтверждён формат')
@@ -344,7 +438,7 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
         self.updates = [message(1, '/status')]
         await self.telegram.poll_once()
         response = (await self.store.pending_messages())[0]['text']
-        self.assertIn('автоотклик удалён', response)
+        self.assertIn('отключены (тихий режим; просмотр: /browse, /next)', response)
         self.assertIn('Нужно заново войти в HH', response)
         self.assertIn('hh: вакансий 2', response)
         self.assertIn('охват неполный', response)

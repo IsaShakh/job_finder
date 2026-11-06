@@ -274,6 +274,7 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.store.get("probe:1001"))["letter"].text, first_letter)
 
     async def test_ready_job_gets_card_notification_and_deliver_flag_gates_it(self):
+        await self.store.set("DELIVER", True)  # тихий режим выключен для этого теста
         job = vacancy(id="1001", salary=Salary(200000))
         source = Probe("probe", fetch_for={"1001": job})
         await self.store.discover("probe", vacancy(id="1001"))
@@ -301,6 +302,7 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.store.get("probe:1002"))["status"], "ready")
 
     async def test_card_notification_is_unique_per_cluster(self):
+        await self.store.set("DELIVER", True)  # тихий режим выключен для этого теста
         await self.store.discover("probe", vacancy(id="1001", title="Python", company="Акме"))
         await self.store.make_ready("probe:1001",
                                     Letter("Письмо", ["python_backend"], [], []), "подходит")
@@ -316,6 +318,7 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         await cursor.close()
 
     async def test_keep_generates_letter_via_notification(self):
+        await self.store.set("DELIVER", True)  # тихий режим выключен для этого теста
         job = vacancy(id="1001", salary=Salary(200000))
         source = Probe("probe", fetch_for={"1001": job})
         await self.store.discover("probe", vacancy(id="1001"))

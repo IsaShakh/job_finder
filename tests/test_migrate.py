@@ -181,7 +181,7 @@ class MigrationTests(unittest.TestCase):
         self.assertIsNone(store.setting("search_requested"))
         self.assertIsNone(store.setting("reconcile_requested"))
         self.assertIsNone(store.setting("telegram_chunk_5"))
-        self.assertEqual(store.setting("DELIVER"), True)
+        self.assertEqual(store.setting("DELIVER"), False)
         self.assertEqual(store.setting("NOTIFY_MODE"), "immediate")
         self.assertEqual(store.setting("rules_version"), "v3")
         self.assertEqual(store.setting("paused"), True)
@@ -237,7 +237,7 @@ class MigrationTests(unittest.TestCase):
         self.assertEqual(pilot["status"], "skipped")
         self.assertEqual(pilot["reason"], "отклик уже отправлен ранее (архив)")
         self.assertTrue(store.is_paused())
-        self.assertEqual(store.setting("DELIVER"), True)
+        self.assertEqual(store.setting("DELIVER"), False)
 
     def test_migrate_function_is_idempotent(self):
         build_legacy(self.path)

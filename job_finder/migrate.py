@@ -30,8 +30,13 @@ from datetime import datetime, timezone
 LEGACY_KEYS = ("HH_LIVE", "next_send_at", "search_requested", "reconcile_requested")
 DEFAULT_SETTINGS = {
     "paused": True,
-    "DELIVER": True,
+    # Тихий режим (06.11.2026): новые вакансии не рассылаются автоматически,
+    # просмотр — по запросу (/browse, /next, кнопка «Следующая вакансия»).
+    "DELIVER": False,
     "NOTIFY_MODE": "immediate",
+    # Описание вакансии в карточке обрезается до этого числа символов;
+    # дальше — по ссылке на вакансию.
+    "card_description_limit": 2000,
     # Правила v3 (этап 2a): legacy-строки переоценятся в первом раунде.
     "rules_version": "v3",
     "profile_version": "legacy",

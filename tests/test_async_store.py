@@ -32,7 +32,7 @@ class AsyncStoreTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(table, tables)
         pilot = await self.store.get("137924141")
         self.assertEqual(pilot["status"], "skipped")
-        self.assertEqual(await self.store.setting("DELIVER"), True)
+        self.assertEqual(await self.store.setting("DELIVER"), False)
         self.assertTrue(await self.store.is_paused())
 
     async def test_writes_go_through_single_consumer(self):
