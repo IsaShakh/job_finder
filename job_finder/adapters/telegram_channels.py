@@ -31,6 +31,21 @@ GROSS_RE = re.compile(r"до вычета|gross", re.I)
 NET_RE = re.compile(r"на руки|net", re.I)
 TAG_RE = re.compile(r"#([\wа-яё]+)", re.I)
 MOSCOW_STOP = ("московская область", "московская обл", "подмосковье")
+CYRILLIC_RE = re.compile(r"[а-яё]", re.I)
+LATIN_RE = re.compile(r"[a-z]", re.I)
+
+
+def detect_language(text):
+    """Язык поста: кириллица → ru, иначе латиница → en; без букв — ru.
+
+    Смешанные посты (русский текст с латинскими названиями) считаются ru.
+    Writer v3 определяет язык письма по тексту вакансии независимо, это
+    поле — честная разметка карточки."""
+    if CYRILLIC_RE.search(text or ""):
+        return "ru"
+    if LATIN_RE.search(text or ""):
+        return "en"
+    return "ru"
 
 
 def load_credentials(config):
@@ -101,7 +116,7 @@ def vacancy_from_message(channel, message):
         location="Москва" if _moscow_in(text) else None,
         salary_gross=gross,
         published_at=_utc_iso(message),
-        language="ru",
+        language=detect_language(text),
         source_url="https://t.me/%s/%s" % (channel, message.id),
     )
 

@@ -5,7 +5,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from job_finder.adapters.telegram_channels import (TelegramChannelsAdapter, is_ad,
+from job_finder.adapters.telegram_channels import (TelegramChannelsAdapter,
+                                                   detect_language, is_ad,
                                                    vacancy_from_message)
 from job_finder.config import Config
 from job_finder.models import Vacancy, VacancyUnavailable
@@ -67,6 +68,13 @@ OFFICE_POST = ("**Python разработчик** Москва\n"
 AD_POST = ("Реклама\nКурсы Python со скидкой: otus.ru/python")
 
 MOSCOW_OBLAST_POST = ("**Python разработчик**\nФормат: удалённо\nМосковская область\n#python")
+
+EN_POST = ("**Senior Python Backend Engineer**\n"
+           "Format: remote\n"
+           "Company: Acme\n"
+           "Salary: 5000-7000 USD\n"
+           "#python #fastapi #llm\n"
+           "Apply: https://example.com/jobs/42")
 
 
 class ChannelAdapterTests(unittest.IsolatedAsyncioTestCase):
@@ -151,15 +159,30 @@ class ChannelAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(is_ad("Курс: otus.ru/python"))
         self.assertFalse(is_ad(VACANCY_POST))
 
+    def test_detect_language(self):
+        self.assertEqual(detect_language(VACANCY_POST), "ru")
+        self.assertEqual(detect_language(EN_POST), "en")
+        self.assertEqual(detect_language("Смешанный пост про FastAPI"), "ru")
+        self.assertEqual(detect_language(""), "ru")
+
+    async def test_fetch_sets_language_from_post_text(self):
+        adapter, client = self.adapter(messages=[FakeMessage(1, VACANCY_POST),
+                                                 FakeMessage(2, EN_POST)])
+        self.assertEqual((await adapter.fetch("1")).language, "ru")
+        self.assertEqual((await adapter.fetch("2")).language, "en")
+
     def test_fixtures_map_without_crash_and_find_salaries(self):
         # Реальные фикстуры из разведки 06.11 — маппинг не должен падать.
         fixtures = Path(__file__).resolve().parents[1] / "docs" / "research" / "fixtures" / "tg_channels"
         parsed = 0
         with_salary = 0
         for fixture in sorted(fixtures.glob("*.json")):
-            if fixture.name == "report.json":
+            if fixture.name.endswith("report.json"):
                 continue
-            for post in json.loads(fixture.read_text()):
+            posts = json.loads(fixture.read_text())
+            if not isinstance(posts, list):
+                continue  # не фикстура постов (например, отчёт разведки)
+            for post in posts:
                 message = FakeMessage(post["id"], post["text"])
                 vacancy = vacancy_from_message(fixture.stem, message)
                 self.assertTrue(vacancy.title or vacancy.description)
