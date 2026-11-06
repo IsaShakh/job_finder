@@ -72,7 +72,7 @@ class RuFormatTests(unittest.TestCase):
     def test_remote_foreign_only_rejected(self):
         # Ограничение на конкретную территорию — rejected; исключение «только РФ».
         for geo in ("US-only", "EMEA", "вне РФ", "Serbia only", "Poland-only",
-                    "только для граждан Казахстана"):
+                    "China only", "только для граждан Казахстана"):
             with self.subTest(geo=geo):
                 self.assertEqual(status(vacancy(remote_geo=geo, salary=Salary(200000))), "rejected")
 
@@ -146,7 +146,7 @@ class IntlFormatTests(unittest.TestCase):
     def test_remote_foreign_only_rejected(self):
         # Ограничение на конкретную территорию — rejected для intl всегда.
         for geo in ("US-only", "EMEA", "APAC", "Europe only", "Belarus only",
-                    "только РФ", "UK only"):
+                    "только РФ", "UK only", "China only"):
             with self.subTest(geo=geo):
                 self.assertEqual(status(vacancy(remote_geo=geo, salary=Salary(300000)), INTL), "rejected")
 
@@ -189,7 +189,8 @@ class IntlFormatTests(unittest.TestCase):
                                   ("Белград", "Сербия"), ("Тбилиси", "Грузия"),
                                   ("Ереван", "Армения"), ("Алматы", "Казахстан"),
                                   ("Бангкок", "Таиланд"), ("Сидней", "Австралия"),
-                                  ("Торонто", "Канада")):
+                                  ("Торонто", "Канада"), ("Пекин", "Китай"),
+                                  ("Shanghai", "Китай")):
             with self.subTest(location=location):
                 assessment = evaluate(vacancy(remote=False, location=location,
                                               salary=Salary(200000)), INTL)
@@ -217,6 +218,11 @@ class IntlFormatTests(unittest.TestCase):
         self.assertEqual(assessment.status, "ready")
         self.assertIn("релокация в Warsaw", assessment.reason)
         self.assertIn("Польша", assessment.reason)
+        # Китай в белом списке (06.11.2026, v5).
+        assessment = evaluate(vacancy(description="Python. relocation to Shenzhen",
+                                      salary=Salary(200000)), INTL)
+        self.assertEqual(assessment.status, "ready")
+        self.assertIn("Китай", assessment.reason)
 
     def test_relocation_outside_whitelist_rejected(self):
         self.assertEqual(status(vacancy(description="Python. relocation to Berlin",

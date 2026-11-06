@@ -76,7 +76,7 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         await self.store.set('rules_version', 'v3')
         engine = self.engine([])
         await engine.start()
-        self.assertEqual(await self.store.setting('rules_version'), 'v4')
+        self.assertEqual(await self.store.setting('rules_version'), 'v5')
 
     async def test_start_requeues_interrupted_active_round(self):
         await self.store.round_request()
@@ -219,7 +219,7 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         await engine.tick()
         row = await self.store.get("probe:1001")
         self.assertEqual(row["status"], "ready")
-        self.assertEqual(row["rules_version"], "v4")
+        self.assertEqual(row["rules_version"], "v5")
         self.assertNotEqual(row["letter"].text, "Старое письмо")
 
     async def test_legacy_test_rejection_is_reassessed_to_ready_with_label(self):
@@ -248,7 +248,7 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         await engine.tick()
         row = await self.store.get("probe:1003")
         self.assertEqual(row["status"], "rejected")
-        self.assertEqual(row["rules_version"], "v4")
+        self.assertEqual(row["rules_version"], "v5")
         self.assertIsNone(row["letter"])
 
     async def test_card_stores_score_advice_and_logs_llm_cost(self):
@@ -262,7 +262,7 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["status"], "ready")
         self.assertEqual(row["llm"]["score"], 80)
         self.assertEqual(row["llm"]["score_status"], "ok")
-        self.assertEqual(row["llm"]["stamp"]["rules_version"], "v4")
+        self.assertEqual(row["llm"]["stamp"]["rules_version"], "v5")
         cursor = await self.store._conn.execute("SELECT kind,model,prompt_tokens,cost FROM llm_calls")
         calls = [tuple(item) for item in await cursor.fetchall()]
         await cursor.close()
@@ -277,7 +277,7 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         await engine.prepare("probe:1001")
         first_letter = (await self.store.get("probe:1001"))["letter"].text
         # Повторная подготовка с теми же версиями — без вызова LLM (R7).
-        await engine._card("probe:1001", job, dedupe_content_hash(job), "v4")
+        await engine._card("probe:1001", job, dedupe_content_hash(job), "v5")
         self.assertEqual(writer.calls, 1)
         self.assertEqual((await self.store.get("probe:1001"))["letter"].text, first_letter)
 
@@ -331,7 +331,7 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         source = Probe("probe", fetch_for={"1001": job})
         await self.store.discover("probe", vacancy(id="1001"))
         await self.store.decide("probe:1001", "needs_clarification", "не подтверждён формат",
-                                rules_version="v4")
+                                rules_version="v5")
         engine = self.engine([source])
         self.assertTrue(await self.store.keep_job("probe:1001"))
         await engine.tick()
