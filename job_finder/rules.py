@@ -1,16 +1,24 @@
-"""Правила отбора v3 (разделы 7, 7.3 плана; 05.11.2026).
+"""Правила отбора v4 (разделы 7, 7.3 плана; 05–06.11.2026).
 
 `evaluate(vacancy, profile)` оценивает одну вакансию одним профилем;
 `evaluate_all` прогоняет её по всем активным профилям — вакансия проходит,
 если проходит хотя бы один (R1: факты вакансии важнее дефолта источника).
 Грейд возвращается с основанием (grade/grade_evidence) для карточки.
 Тест больше не отклоняет вакансию (метка — в движке, 1b).
+
+v4 — белый список стран (06.11.2026): офис/релокация и гео-ограничения
+удалёнки только для России (RU) и Сербии, Польши, Грузии, Армении,
+Казахстана, Таиланда, Австралии, Канады, ОАЭ (intl).
 """
 import re
 from dataclasses import dataclass
 from typing import Optional
 
 from .models import Salary
+
+# Версия правил: строки, решённые старыми правилами, переоцениваются
+# движком при расхождении (16.2). Меняется при изменении критериев.
+RULES_VERSION = "v4"
 
 PYTHON_RE = re.compile(r"\bpython\b|\bпитон\w*")
 MIDDLE_RE = re.compile(r"\b(?:middle|mid|senior|lead|principal|staff)\b|мид[д]?л|сеньор|сениор|ведущ\w*|старший|руководител|тимлид|техлид")
@@ -21,21 +29,62 @@ STACK_RES = (
     re.compile(r"\baiohttp\b"), re.compile(r"\bpydantic\b"), re.compile(r"\bcelery\b"),
     re.compile(r"\bstarlette\b"), re.compile(r"\btortoise\b"),
 )
-# «Удалёнка ограничена чужой территорией» (7.1, 7.2).
-FOREIGN_GEO_RE = re.compile(
-    r"\b(?:us|usa|uk|eu|emea|apac|europe|latin\s+america|canada|australia|asia|oceania|africa"
-    r"|czech|poland|georgia|serbia|armenia|kazakhstan)[- ]only\b"
-    r"|\b(?:emea|apac)\b"
-    r"|\boutside\s+(?:the\s+)?(?:us|usa)\b|\bвне\s+рф\b|\bтолько\s+не\s+рф\b", re.I)
+# Белый список стран (решение 06.11.2026, вторая волна): офис, релокация и
+# гео-ограничения удалёнки принимаются только для этих стран. Для RU-профиля
+# разрешённая география — Россия (офис Москва — прежняя логика N10).
+RU_GEO = {"Россия": ("росси", "рф", "russia", "москв", "moscow")}
+INTL_TARGETS = {
+    "Сербия": ("серби", "serbia", "serb", "белград", "belgrade", "нови сад", "novi sad"),
+    "Польша": ("польш", "poland", "polish", "варшав", "warsaw", "краков", "krakow",
+               "вроцлав", "wroclaw", "гданск", "gdansk", "познан", "poznan"),
+    "Грузия": ("грузи", "georgia", "georgian", "тбилиси", "tbilisi", "батуми", "batumi"),
+    "Армения": ("армени", "armenia", "armenian", "ереван", "yerevan"),
+    "Казахстан": ("казахстан", "kazakhstan", "алматы", "almaty", "астан", "astana"),
+    "Таиланд": ("таиланд", "thailand", "thai", "бангкок", "bangkok", "пхукет", "phuket"),
+    "Австралия": ("австрали", "australia", "australi", "сидней", "sydney",
+                  "мельбурн", "melbourne"),
+    "Канада": ("канад", "canada", "canad", "торонто", "toronto", "ванкувер", "vancouver",
+               "монреал", "montreal"),
+    "ОАЭ": ("оаэ", "uae", "дуба", "dubai"),
+}
+# Ограничения географии удалёнки. EN: «X only»/«only for X»; RU: «только X»
+# со словами-странами (полный список «только <что угодно>» не нужен: «только
+# удалёнка» не считается географией); EMEA/APAC — регионы-ограничения сами по
+# себе. Вакансии, явно исключающие граждан РФ, не проходят никогда.
+GEO_ONLY_EN_RE = re.compile(
+    r"\b([a-zа-яё-]{2,20}(?:[ -][a-zа-яё-]{2,20})?)[- ]only\b"
+    r"|\bonly\s+(?:for|from|within)?\s*([a-zа-яё-]{2,20}(?:[ -][a-zа-яё-]{2,20})?)", re.I)
+RU_COUNTRY_WORDS = (
+    "казахстан", "узбекистан", "азербайджан", "нидерланд", "филиппин", "индонези",
+    "австрали", "скандинав", "сингапур", "аргентин", "белорус", "малайзи", "прибалтик",
+    "вьетнам", "таиланд", "болгари", "израил", "румыни", "венгри", "герман", "испани",
+    "итали", "франц", "мексик", "бразили", "украин", "европ", "кипр", "турц", "кита",
+    "инди", "япони", "коре", "зеланд", "чехи", "америк", "канад", "грузи", "армени",
+    "серби", "польш", "росси", "белару", "дуба", "оаэ", "снг", "сша", "рф",
+)
+RU_GEO_RESTRICT_RE = re.compile(
+    r"\bтолько\s+(?:для|из)?\s*(?:граждан|резидентов)?\s*(" + "|".join(RU_COUNTRY_WORDS) + r")\w*",
+    re.I)
+RF_EXCLUDE_RE = re.compile(
+    r"\bвне\s+рф\b|\bтолько\s+не\s+рф\b"
+    r"|\bне\s+(?:рассматриваем|принимаем|нанимаем|берем|берём)\s+(?:заявки\s+)?(?:от\s+|из\s+)?(?:граждан\s+)?рф\b"
+    r"|\bграждан\s+рф\s+не\b|\bгражданство\s+рф\s+не\b"
+    r"|\bno\s+russian\s+(?:citizens|citizenship|passports|residents)\b"
+    r"|\bnot\s+(?:accepting|considering|hiring)\s+(?:russian\s+)?(?:citizens|applicants)\b"
+    r"|\brussian\s+citizens\s+not\s+(?:accepted|eligible|considered)\b", re.I)
+REGION_WORD_RE = re.compile(r"\b(emea|apac)\b", re.I)
+GEO_OK_WORDS = ("worldwide", "global", "anywhere", "remote", "удалённо", "удаленно",
+                "удалённая", "удаленная", "все", "мир", "ru", "intl")
 RELOC_RE = re.compile(r"релок\w*|relocation", re.I)
-RELOC_TARGET_RE = re.compile(r"(?:в|to|into?)\s+([а-яёa-z-]{2,40})", re.I)
+RELOC_TARGET_RE = re.compile(r"(?:в|to|into?)\s+([а-яёa-z-]{2,40}(?:\s+[а-яёa-z-]{2,40})?)", re.I)
+OFFICE_MARK_RE = re.compile(r"офис|office|гибрид|hybrid", re.I)
 TRIPS_RE = re.compile(r"командиров|business travel|travel required", re.I)
 NO_TRIPS_RE = re.compile(r"без командиров\w*|командировки не (?:требуются|предусмотрены)|no (?:business )?travel", re.I)
 
 # Стоп-паттерны N10: «Московская область»/«Подмосковье» вычитаются
 # при проверке Москвы; «Москва и МО» — подходит.
 MOSCOW_STOP = ("московская область", "московская обл", "подмосковье")
-# Склонения и латинские названия целевых городов релокации.
+# Склонения и латинские названия целевых городов релокации RU-профиля.
 CITY_STEMS = {"москва": ("москв", "moscow"), "дубай": ("дуба", "dubai")}
 RELOC_PHRASE = {"Москва": "Релокация в Москву", "Дубай": "Релокация в Дубай"}
 
@@ -125,55 +174,108 @@ def _city_in(location, city):
     return city in text or any(alias in text for alias in stems)
 
 
-def relocation_target(text, city):
-    """(kind, target): ('city',...)|('other',...)|('none',None)|None — нет релокации."""
+def _match_target(targets, text):
+    """Название страны из targets, чей стем встретился в text; None — нет."""
+    lowered = (text or "").lower()
+    for country, stems in targets.items():
+        if any(stem in lowered for stem in stems):
+            return country
+    return None
+
+
+def relocation_target(text, profile):
+    """(kind, label): релокация в разрешённую страну/город, в другую или без цели.
+
+    RU-профиль: только Москва (прежнее правило); intl — белый список стран
+    (06.11.2026): релокация в страну из списка допускает офис, в другую —
+    rejected, без города — needs_clarification."""
     match = RELOC_RE.search(text)
     if not match:
         return None
-    window = text[match.end():match.end() + 100]
-    stems = CITY_STEMS.get(city, (city,))
+    window = text[match.end():match.end() + 120]
+    if profile.region == "RU":
+        stems = CITY_STEMS.get(profile.city.lower(), (profile.city.lower(),))
+        for target in RELOC_TARGET_RE.findall(window):
+            normalized = target.strip().lower().rstrip(".,;")
+            if any(normalized.startswith(stem) for stem in stems):
+                return "city", RELOC_PHRASE.get(profile.city, "Релокация в " + profile.city)
+            return "other", target.strip()
+        return "none", None
     for target in RELOC_TARGET_RE.findall(window):
-        normalized = target.strip().lower().rstrip(".,;")
-        if any(normalized.startswith(stem) for stem in stems):
-            return "city", city
+        country = _match_target(INTL_TARGETS, target)
+        if country:
+            return "city", "Офис/гибрид, релокация в %s (%s)" % (target.strip().capitalize(), country)
         return "other", target.strip()
     return "none", None
+
+
+def remote_geo_ok(profile, geo):
+    """Удалёнка и ограничения её географии (уточнение 06.11.2026).
+
+    Ограничение на конкретную территорию («Poland only», «только для граждан
+    Казахстана», US-only, EMEA…) — rejected для обоих профилей; исключение —
+    «только РФ» для RU-профиля (гражданин РФ работает из РФ). Удалёнка без
+    ограничений проходит («удалёнка любая» для RU). Исключения граждан РФ
+    проверяются отдельно (RF_EXCLUDE_RE) по всему тексту вакансии."""
+    if not geo:
+        return True
+    if RF_EXCLUDE_RE.search(geo):
+        return False
+    targets = [next(group for group in match.groups() if group)
+               for match in GEO_ONLY_EN_RE.finditer(geo)]
+    targets += [match.group(1) for match in RU_GEO_RESTRICT_RE.finditer(geo)]
+    targets += REGION_WORD_RE.findall(geo)
+    if targets:
+        if profile.region == "RU":
+            return all(_match_target(RU_GEO, target) is not None for target in targets)
+        return False
+    # Короткая строка без шаблонов — сама территория («US», «Europe»…).
+    if re.fullmatch(r"[a-zа-яё-]{2,20}", geo) and geo not in GEO_OK_WORDS:
+        return profile.region == "RU" and _match_target(RU_GEO, geo) is not None
+    return True
 
 
 def evaluate_format(profile, vacancy, text):
     """Формат RU/intl (7.1, 7.2): (ok|rejected|needs_clarification, reason, label).
 
-    Решение 06.11.2026 (вторая волна источников): для intl предложенная
-    релокация допускает офис — «релокация в другой город» и «релокация без
-    города» проходят с меткой офис/гибрид + релокация. Для RU поведение
-    прежнее: только релокация в профильный город (Москва)."""
+    Белый список стран (06.11.2026, вторая волна): офис и релокация — только
+    в разрешённых странах (RU-профиль: Россия/Москва; intl: Сербия, Польша,
+    Грузия, Армения, Казахстан, Таиланд, Австралия, Канада, ОАЭ). Удалёнка:
+    без ограничений — ок; ограничение на конкретную территорию — rejected
+    (для RU исключение «только РФ»); исключения граждан РФ — rejected всегда."""
     city = profile.city.lower()
     geo = (vacancy.remote_geo or "").lower()
     location = vacancy.location or ""
-    reloc = relocation_target(text, city)
+    reloc = relocation_target(text, profile)
     if reloc:
-        kind, target = reloc
+        kind, label = reloc
         if kind == "city":
-            return "ok", RELOC_PHRASE.get(profile.city, "Релокация в " + profile.city)
+            return "ok", label
         if kind == "other":
             if profile.region == "intl":
-                return "ok", "Офис/гибрид, релокация в %s" % target.capitalize()
-            return "rejected", "Релокация в другой город (%s)" % target
-        if profile.region == "intl":
-            return "ok", "Офис/гибрид, релокация предлагается"
-        return "needs_clarification", "Релокация без целевого города"
+                return "rejected", "Релокация в страну вне списка (%s)" % label
+            return "rejected", "Релокация в другой город (%s)" % label
+        return "needs_clarification", "Релокация без целевой страны"
     if vacancy.remote is True:
-        if FOREIGN_GEO_RE.search(geo):
+        if not remote_geo_ok(profile, geo):
             return "rejected", "Удалёнка ограничена чужой территорией"
         return "ok", "Удалённая работа подтверждена"
-    if _city_in(location, city):
-        return "ok", "Офис/гибрид, " + profile.city
-    if vacancy.remote is False:
-        if profile.region == "RU":
-            return "rejected", "Удалённая работа не предусмотрена"
-        return "rejected", "Офис вне " + profile.city + "; удалёнка не предусмотрена"
     if profile.region == "RU":
+        if _city_in(location, city):
+            return "ok", "Офис/гибрид, " + profile.city
+        if vacancy.remote is False:
+            return "rejected", "Удалённая работа не предусмотрена"
         return "needs_clarification", "Не подтверждён удалённый формат"
+    # intl: офис — только в странах белого списка; страна может быть названа
+    # в тексте поста канала, а не только в поле локации.
+    country = _match_target(INTL_TARGETS, location)
+    if country:
+        return "ok", "Офис/гибрид, " + country
+    if vacancy.remote is False or OFFICE_MARK_RE.search(text):
+        country = _match_target(INTL_TARGETS, text)
+        if country:
+            return "ok", "Офис/гибрид, " + country
+        return "rejected", "Офис вне списка стран; удалёнка не предусмотрена"
     return "needs_clarification", "Формат и география не указаны"
 
 
@@ -231,6 +333,10 @@ def evaluate(vacancy, profile):
 
     if vacancy.closed:
         return result("closed", "Вакансия закрыта")
+    # Вакансии, явно исключающие граждан РФ, не проходят никогда
+    # (уточнение 06.11.2026; проверяется по всему тексту, не только по гео).
+    if RF_EXCLUDE_RE.search(text):
+        return result("rejected", "Вакансия исключает граждан РФ")
     # Приоритет регионального правила над общим (R9): intl отклоняет Junior.
     if profile.region == "intl" and grade == "junior":
         return result("rejected", "Явный Junior/Trainee не подходит для зарубежного региона")

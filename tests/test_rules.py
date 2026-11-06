@@ -70,9 +70,29 @@ class RuFormatTests(unittest.TestCase):
         self.assertEqual(status(vacancy(remote_geo="только РФ", salary=Salary(200000))), "ready")
 
     def test_remote_foreign_only_rejected(self):
-        for geo in ("US-only", "EMEA", "outside the US", "вне РФ"):
+        # Ограничение на конкретную территорию — rejected; исключение «только РФ».
+        for geo in ("US-only", "EMEA", "вне РФ", "Serbia only", "Poland-only",
+                    "только для граждан Казахстана"):
             with self.subTest(geo=geo):
                 self.assertEqual(status(vacancy(remote_geo=geo, salary=Salary(200000))), "rejected")
+
+    def test_remote_outside_us_fits(self):
+        # «Outside the US» не исключает РФ — ограничение совместимо.
+        self.assertEqual(status(vacancy(remote_geo="outside the US",
+                                        salary=Salary(200000))), "ready")
+
+    def test_rf_exclusion_rejected(self):
+        # Вакансии, исключающие граждан РФ, не проходят никогда (06.11.2026).
+        for text in ("не принимаем граждан РФ", "граждан РФ не рассматриваем",
+                     "no Russian citizens", "not accepting Russian applicants"):
+            with self.subTest(text=text):
+                self.assertEqual(status(vacancy(description="Python. " + text,
+                                                salary=Salary(200000))), "rejected")
+
+    def test_russian_language_requirement_is_not_exclusion(self):
+        # «No Russian language» — про язык, а не про гражданство.
+        self.assertEqual(status(vacancy(description="Python. No Russian language required",
+                                        salary=Salary(200000))), "ready")
 
     def test_moscow_office_fits_with_label(self):
         assessment = evaluate(vacancy(remote=False, location="Москва", salary=Salary(200000)), RU)
@@ -116,7 +136,7 @@ class RuFormatTests(unittest.TestCase):
 
 
 class IntlFormatTests(unittest.TestCase):
-    """7.2: каждый исход формата intl."""
+    """7.2: каждый исход формата intl с белым списком стран (06.11.2026)."""
     def test_remote_without_geo_fits(self):
         self.assertEqual(status(vacancy(salary=Salary(100000)), INTL), "ready")
 
@@ -124,39 +144,101 @@ class IntlFormatTests(unittest.TestCase):
         self.assertEqual(status(vacancy(remote_geo="worldwide", salary=Salary(100000)), INTL), "ready")
 
     def test_remote_foreign_only_rejected(self):
-        for geo in ("US-only", "EMEA", "outside the US"):
+        # Ограничение на конкретную территорию — rejected для intl всегда.
+        for geo in ("US-only", "EMEA", "APAC", "Europe only", "Belarus only",
+                    "только РФ", "UK only"):
             with self.subTest(geo=geo):
                 self.assertEqual(status(vacancy(remote_geo=geo, salary=Salary(300000)), INTL), "rejected")
 
-    def test_dubai_office_fits(self):
-        for location in ("Дубай", "Dubai"):
+    def test_remote_whitelist_country_restrictions_rejected(self):
+        # Уточнение 06.11.2026: «Poland only» и т.п. не проходят даже для
+        # стран белого списка — нужно находиться в стране уже сейчас.
+        for geo in ("Poland only", "Serbia-only", "Thailand only",
+                    "only for Canadian citizens", "Australia only",
+                    "только для граждан Казахстана"):
+            with self.subTest(geo=geo):
+                self.assertEqual(status(vacancy(remote_geo=geo, salary=Salary(300000)), INTL), "rejected")
+
+    def test_remote_outside_rf_rejected_for_all_profiles(self):
+        for geo in ("вне РФ", "только не РФ"):
+            with self.subTest(geo=geo):
+                self.assertEqual(status(vacancy(remote_geo=geo, salary=Salary(300000)), INTL), "rejected")
+
+    def test_rf_exclusion_rejected(self):
+        for text in ("не принимаем граждан РФ", "граждан РФ не рассматриваем",
+                     "no Russian citizens", "russian citizens not accepted"):
+            with self.subTest(text=text):
+                self.assertEqual(status(vacancy(description="Python. " + text,
+                                                salary=Salary(300000)), INTL), "rejected")
+
+    def test_remote_outside_us_fits(self):
+        self.assertEqual(status(vacancy(remote_geo="outside the US",
+                                        salary=Salary(300000)), INTL), "ready")
+
+    def test_remote_geo_word_without_country_is_not_restriction(self):
+        self.assertEqual(status(vacancy(remote_geo="только удалёнка",
+                                        salary=Salary(300000)), INTL), "ready")
+
+    def test_remote_bare_geo_word_checked(self):
+        for geo in ("US", "Europe", "Canada", "UAE"):
+            with self.subTest(geo=geo):
+                self.assertEqual(status(vacancy(remote_geo=geo, salary=Salary(300000)), INTL), "rejected")
+
+    def test_whitelist_offices_fit_with_country_label(self):
+        for location, country in (("Дубай", "ОАЭ"), ("Dubai", "ОАЭ"), ("Варшава", "Польша"),
+                                  ("Белград", "Сербия"), ("Тбилиси", "Грузия"),
+                                  ("Ереван", "Армения"), ("Алматы", "Казахстан"),
+                                  ("Бангкок", "Таиланд"), ("Сидней", "Австралия"),
+                                  ("Торонто", "Канада")):
             with self.subTest(location=location):
-                self.assertEqual(status(vacancy(remote=False, location=location,
-                                                salary=Salary(200000)), INTL), "ready")
+                assessment = evaluate(vacancy(remote=False, location=location,
+                                              salary=Salary(200000)), INTL)
+                self.assertEqual(assessment.status, "ready")
+                self.assertIn(country, assessment.reason)
 
-    def test_relocation_to_dubai_fits(self):
-        self.assertEqual(status(vacancy(description="Python. relocation to Dubai",
-                                        salary=Salary(200000)), INTL), "ready")
-
-    def test_relocation_without_city_office_allowed(self):
-        # Решение 06.11.2026: предложенная релокация допускает офис (intl).
-        assessment = evaluate(vacancy(description="Python. relocation",
+    def test_office_country_in_text_fits(self):
+        # Каналы называют страну в тексте поста, а не в поле локации.
+        assessment = evaluate(vacancy(remote=False, location=None,
+                                      description="Python. Офис в Белграде",
                                       salary=Salary(200000)), INTL)
         self.assertEqual(assessment.status, "ready")
-        self.assertIn("релокация предлагается", assessment.reason)
+        self.assertIn("Сербия", assessment.reason)
 
-    def test_relocation_to_other_city_office_allowed(self):
-        # Решение 06.11.2026: релокация в другой город допускает офис (intl).
+    def test_relocation_to_dubai_fits(self):
+        assessment = evaluate(vacancy(description="Python. relocation to Dubai",
+                                      salary=Salary(200000)), INTL)
+        self.assertEqual(assessment.status, "ready")
+        self.assertIn("релокация в Dubai", assessment.reason)
+        self.assertIn("ОАЭ", assessment.reason)
+
+    def test_relocation_to_whitelist_country_office_allowed(self):
         assessment = evaluate(vacancy(description="Python. relocation to Warsaw",
                                       salary=Salary(200000)), INTL)
         self.assertEqual(assessment.status, "ready")
         self.assertIn("релокация в Warsaw", assessment.reason)
+        self.assertIn("Польша", assessment.reason)
+
+    def test_relocation_outside_whitelist_rejected(self):
+        self.assertEqual(status(vacancy(description="Python. relocation to Berlin",
+                                        salary=Salary(200000)), INTL), "rejected")
+
+    def test_relocation_without_city_needs_clarification(self):
+        self.assertEqual(status(vacancy(description="Python. relocation",
+                                        salary=Salary(200000)), INTL), "needs_clarification")
 
     def test_nothing_specified_needs_clarification(self):
         self.assertEqual(status(vacancy(remote=None, salary=Salary(200000)), INTL), "needs_clarification")
 
-    def test_office_outside_dubai_rejected(self):
-        self.assertEqual(status(vacancy(remote=False, location="Варшава",
+    def test_office_outside_whitelist_rejected(self):
+        for location in ("Берлин", "Санкт-Петербург", "Стамбул"):
+            with self.subTest(location=location):
+                self.assertEqual(status(vacancy(remote=False, location=location,
+                                                salary=Salary(200000)), INTL), "rejected")
+
+    def test_office_marker_without_country_rejected(self):
+        # Формат не указан, но в тексте есть офис-маркер без страны из списка.
+        self.assertEqual(status(vacancy(remote=None, location=None,
+                                        description="Python. Офис в Берлине",
                                         salary=Salary(200000)), INTL), "rejected")
 
     def test_junior_rejected_always_even_with_salary(self):

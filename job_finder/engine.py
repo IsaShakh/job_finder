@@ -44,6 +44,11 @@ class Engine:
         await self.store.set('attention_reason','')
         # Пауза доставки снимается перезапуском: проблему исправили → запустили заново.
         await self.store.set('paused', False)
+        # Версия правил: строки, решённые старыми правилами, переоцениваются
+        # в следующем тике (16.2).
+        from .rules import RULES_VERSION
+        if await self.store.setting('rules_version') != RULES_VERSION:
+            await self.store.set('rules_version', RULES_VERSION)
 
     async def attention(self, message):
         logger.error("требуется действие: %s", message)

@@ -183,7 +183,7 @@ class MigrationTests(unittest.TestCase):
         self.assertIsNone(store.setting("telegram_chunk_5"))
         self.assertEqual(store.setting("DELIVER"), False)
         self.assertEqual(store.setting("NOTIFY_MODE"), "immediate")
-        self.assertEqual(store.setting("rules_version"), "v3")
+        self.assertEqual(store.setting("rules_version"), "v4")
         self.assertEqual(store.setting("paused"), True)
 
         # Бэкап создан ПЕРЕД изменениями.
