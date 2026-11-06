@@ -1,4 +1,5 @@
 import asyncio
+import json
 import tempfile
 import unittest
 from dataclasses import replace
@@ -13,6 +14,39 @@ from job_finder.dedupe import (DEDUP_COSINE_THRESHOLD, EmbeddingClient, cosine,
 from job_finder.engine import Engine
 from job_finder.models import Letter, Salary, Vacancy
 from tests.test_rules import vacancy
+
+
+class EmbeddingModelTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        with patch.dict(__import__("os").environ, {}, clear=True):
+            self.config = Config.load(Path(self.temp.name))
+        self.config = replace(self.config, llm_api_key="test-key", llm_model="gpt-4o-mini")
+
+    async def test_embedding_uses_dedicated_model(self):
+        # Эмбеддинги идут в LLM_EMBEDDING_MODEL, а не в чат-модель (этап 8).
+        import httpx
+        captured = []
+
+        def responder(request):
+            captured.append(json.loads(request.content))
+            return httpx.Response(200, json={"data": [{"embedding": [1.0, 0.0]}],
+                                             "model": "text-embedding-3-small"})
+        client = httpx.AsyncClient(transport=httpx.MockTransport(responder))
+        embeddings = EmbeddingClient(self.config, http_client=client)
+        vector, dim, model = await embeddings.embed("Python developer")
+        await client.aclose()
+        self.assertEqual(captured[0]["model"], "text-embedding-3-small")
+        self.assertEqual(model, "text-embedding-3-small")
+        self.assertEqual((vector, dim), ([1.0, 0.0], 2))
+
+    async def test_embedding_model_is_configurable(self):
+        with patch.dict(__import__("os").environ,
+                        {"LLM_EMBEDDING_MODEL": "my-embedder"}, clear=True):
+            config = replace(Config.load(Path(self.temp.name)), llm_api_key="k")
+        self.assertEqual(config.llm_embedding_model, "my-embedder")
+        self.assertTrue(EmbeddingClient(config).available)
 
 
 class NormalizationTests(unittest.TestCase):

@@ -92,19 +92,22 @@ def merge_kind(exact, links, embeddings):
 
 
 class EmbeddingClient:
-    """OpenAI-совместимые эмбеддинги; валидация ответа, санитизация ошибок."""
+    """OpenAI-совместимые эмбеддинги; валидация ответа, санитизация ошибок.
+
+    Использует отдельную модель LLM_EMBEDDING_MODEL (по умолчанию
+    text-embedding-3-small) — чат-модель эмбеддинги не отдаёт."""
 
     def __init__(self, config, http_client=None):
         self.config = config
         self.http_client = http_client
-        self.available = bool(config.llm_api_key and config.llm_model)
+        self.available = bool(config.llm_api_key and config.llm_embedding_model)
 
     async def embed(self, text):
         """→ (vector, dim, model). Ошибки санитизированы, не блокируют очередь."""
         if not self.available:
             raise RuntimeError("Эмбеддинги недоступны: нет ключа/модели LLM")
         import httpx
-        payload = {"model": self.config.llm_model, "input": text}
+        payload = {"model": self.config.llm_embedding_model, "input": text}
         headers = {"Authorization": "Bearer " + self.config.llm_api_key}
         try:
             if self.http_client is not None:

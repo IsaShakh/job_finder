@@ -35,6 +35,7 @@ class Config:
     llm_base_url: str = 'https://api.openai.com/v1'
     llm_api_key: str = field(default='', repr=False)
     llm_model: str = ''
+    llm_embedding_model: str = 'text-embedding-3-small'
     sources: tuple = ('hh',)
     profiles: tuple = (PROFILES["ru"], PROFILES["intl"])
     tg_channels: tuple = ()   # (name, region) — каналы для адаптера telegram_channels
@@ -111,6 +112,7 @@ class Config:
                    telegram_token=token,
                    owner_id=owner, llm_base_url=base, llm_api_key=value('LLM_API_KEY'),
                    llm_model=value('LLM_MODEL'),
+                   llm_embedding_model=value('LLM_EMBEDDING_MODEL', 'text-embedding-3-small'),
                    sources=list_of('SOURCES', 'hh'),
                    profiles=profiles(),
                    tg_channels=tg_channels(),
