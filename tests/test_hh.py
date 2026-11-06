@@ -239,6 +239,29 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         saved = TokenStore(self.config.api_token_path).load()
         self.assertEqual(saved["access_token"], "USERT1")
 
+    async def test_authorize_with_relative_backurl(self):
+        # Живой HH в OTP-сценарии может вернуть backurl относительным
+        # (/oauth/authorize?...); authorize должен его нормализовать.
+        private, public_pem = make_key()
+        backurl = "/oauth/authorize?client_id=x"
+        self.router.add("GET", "/oauth/authorize", lambda request: httpx.Response(
+            302, headers={"Location": "https://hh.ru/account/login?backurl=" + quote(backurl)}),
+            one_shot=True)
+        self.router.add("GET", "/account/login", lambda request: httpx.Response(
+            200, html=login_html("xsrf1", public_pem)))
+        self.router.add("POST", "/oauth/token", lambda request: httpx.Response(
+            200, json={"access_token": "USERT1", "refresh_token": "REFR1", "expires_in": 1209600}))
+        self.router.add("GET", "/me", lambda request: httpx.Response(
+            200, json={"first_name": "Иса", "last_name": "Ш"}))
+        self.router.add("POST", "/account/otp_generate", lambda request: httpx.Response(
+            200, json={"success": True}))
+        self.router.add("POST", "/account/login/by_code", lambda request: httpx.Response(
+            200, json={"success": True, "verification": {"success": True}}))
+        self.finish_authorize(backurl)
+        me = await authorize(self.config, "71234567890", None,
+                             otp_code=lambda: "1234", http_client=self.router.client(), pre_delay=0)
+        self.assertEqual(me["first_name"], "Иса")
+
     async def test_authorize_by_otp_full_flow(self):
         private, public_pem = make_key()
         backurl = self.authorize_router(public_pem)

@@ -407,6 +407,10 @@ async def authorize(config, username, password=None, otp_code=None, captcha_solv
         xsrf = state.get("xsrfToken") or client.cookies.get("_xsrf")
         pubkey = state.get("loginTrustFlagsSecret")
         backurl = parse_qs(urlsplit(login_url).query).get("backurl", [""])[0]
+        if backurl:
+            # HH иногда отдаёт backurl относительным (/oauth/authorize?...);
+            # httpx требует абсолютный URL.
+            backurl = urljoin(OAUTH_URL, backurl)
         if not (xsrf and pubkey and backurl):
             raise HHAPIError("На странице входа HH не хватает данных; структура изменилась")
         await asyncio.sleep(pre_delay)
