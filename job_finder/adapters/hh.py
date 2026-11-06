@@ -24,7 +24,7 @@ from cryptography.hazmat.primitives.asymmetric import padding
 
 from ..models import AttentionRequired, Salary, Vacancy
 from .base import (AdapterError, OAuthClient, RateLimiter, SearchHit,
-                   SearchReport, TokenStore, safe_json)
+                   SearchReport, TokenStore, safe_json, strip_html)
 
 API_URL = "https://api.hh.ru"
 OAUTH_URL = "https://hh.ru/oauth"
@@ -54,13 +54,6 @@ MAX_CAPTCHA_ATTEMPTS = 5
 
 class HHAPIError(AdapterError):
     """Санитизированная ошибка API hh.ru: без токенов и тел ответов."""
-
-
-def strip_html(text):
-    if not text:
-        return ""
-    text = re.sub(r"<[^>]+>", " ", text)
-    return html.unescape(re.sub(r"\s+", " ", text)).strip()
 
 
 def vacancy_from_json(data):

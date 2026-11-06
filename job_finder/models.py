@@ -27,9 +27,12 @@ class Vacancy:
     salary_gross: Optional[bool] = None
     published_at: Optional[str] = None
     language: str = "ru"
+    source_url: Optional[str] = None   # URL строит адаптер; ядро URL не собирает
 
     @property
     def url(self):
+        if self.source_url:
+            return self.source_url
         if not self.id.isdigit():
             raise ValueError("Некорректный ID вакансии")
         return "https://hh.ru/vacancy/" + self.id

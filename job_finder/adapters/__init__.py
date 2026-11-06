@@ -3,13 +3,15 @@
 Новый адаптер = файл в этом пакете + регистрация в REGISTRY + имя
 в строке конфига SOURCES (через запятую). Контракт — adapters.base.SourceAdapter.
 """
-from .base import AdapterError, SearchHit, SearchReport, SourceAdapter
+from .base import AdapterError, SearchHit, SearchReport, SourceAdapter, strip_html
 from .hh import HHAPIError, HHClient
 from .fake import FakeAdapter
+from .remoteok import RemoteOKAdapter
 
 REGISTRY = {
     "hh": HHClient,
     "fake": FakeAdapter,
+    "remoteok": RemoteOKAdapter,
 }
 
 

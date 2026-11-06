@@ -6,8 +6,10 @@
 токены, cookies и тела ответов в исключения не попадают.
 """
 import asyncio
+import html
 import json
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,6 +20,13 @@ from ..models import AttentionRequired, Vacancy
 
 class AdapterError(ValueError):
     """Санитизированная ошибка адаптера: без токенов и тел ответов."""
+
+
+def strip_html(text):
+    if not text:
+        return ""
+    text = re.sub(r"<[^>]+>", " ", text)
+    return html.unescape(re.sub(r"\s+", " ", text)).strip()
 
 
 @dataclass(frozen=True)
