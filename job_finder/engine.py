@@ -49,9 +49,10 @@ class Engine:
         print("Работа остановлена: "+message+". После исправления перезапустите скрипт.")
 
     def _adapter_for(self, job_id):
-        source = str(job_id).split(":", 1)[0]
+        """Адаптер по полному ID: hh:123 → hh; telegram:<channel>:<msg> → канал."""
+        job_id = str(job_id)
         for adapter in self.adapters:
-            if adapter.name == source:
+            if job_id == adapter.name or job_id.startswith(adapter.name + ":"):
                 return adapter
         return None
 
@@ -154,7 +155,7 @@ class Engine:
             norm_company = normalize_company(vacancy.company)
             norm_title = normalize_title(vacancy.title)
             hash_value = content_hash(vacancy)
-            await self.store.refresh(source, vacancy,
+            await self.store.refresh(adapter.name, vacancy,
                                      norm_company=norm_company,
                                      norm_title=norm_title,
                                      content_hash_value=hash_value)
@@ -218,8 +219,7 @@ class Engine:
         current_rules = await self.store.setting('rules_version')
         try:
             vacancy=await adapter.fetch(Store.native(job_id))
-            source = str(job_id).split(":", 1)[0]
-            await self.store.refresh(source, vacancy,
+            await self.store.refresh(adapter.name, vacancy,
                                      norm_company=normalize_company(vacancy.company),
                                      norm_title=normalize_title(vacancy.title),
                                      content_hash_value=content_hash(vacancy))

@@ -37,6 +37,7 @@ class Config:
     llm_model: str = ''
     sources: tuple = ('hh',)
     profiles: tuple = (PROFILES["ru"], PROFILES["intl"])
+    tg_channels: tuple = ()   # (name, region) — каналы для адаптера telegram_channels
     max_search_pages: int = 100
 
     @classmethod
@@ -71,6 +72,24 @@ class Config:
                 resolved.append(PROFILES[name])
             return tuple(resolved)
 
+        def tg_channels():
+            raw = value('TG_CHANNELS', '')
+            channels = []
+            for item in raw.split(','):
+                item = item.strip()
+                if not item:
+                    continue
+                if ':' in item:
+                    name, region = item.rsplit(':', 1)
+                else:
+                    name, region = item, 'RU'
+                name = name.strip().lstrip('@')
+                region = region.strip().lower()
+                if region not in ('ru', 'intl'):
+                    raise ValueError('TG_CHANNELS: регион канала %s должен быть RU или intl' % name)
+                channels.append((name, region))
+            return tuple(channels)
+
         token = value('TELEGRAM_BOT_TOKEN')
         if token and not re.fullmatch(r'[0-9]+:[A-Za-z0-9_-]+', token):
             raise ValueError('Некорректный TELEGRAM_BOT_TOKEN')
@@ -94,4 +113,5 @@ class Config:
                    llm_model=value('LLM_MODEL'),
                    sources=list_of('SOURCES', 'hh'),
                    profiles=profiles(),
+                   tg_channels=tg_channels(),
                    max_search_pages=positive('MAX_SEARCH_PAGES', 100))

@@ -52,6 +52,8 @@ class Assessment:
 def parse_salary(raw):
     text = raw.lower().replace("\xa0", " ").replace("\u202f", " ")
     numbers = [int(re.sub(r"\D", "", n)) for n in re.findall(r"\d{1,3}(?:[ ]\d{3})+|\d+", text)]
+    if re.search(r"\bтыс\b|тысяч", text):
+        numbers = [number * 1000 for number in numbers]
     currency = next((c for pattern, c in [(r"₽|руб|rur|rub", "RUB"), (r"\$|usd|доллар", "USD"), (r"€|eur|евро", "EUR"), (r"₸|тенге|kzt", "KZT")] if re.search(pattern, text)), "unknown")
     period = next((p for pattern, p in [(r"месяц|month", "month"), (r"час|hour", "hour"), (r"год|year", "year"), (r"смен|день|day", "day")] if re.search(pattern, text)), "unknown")
     if not numbers:
