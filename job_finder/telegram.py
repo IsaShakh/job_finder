@@ -192,18 +192,14 @@ class Telegram:
                     await self.store.command(update['update_id'], 'ignored')
             callback_id = callback.get('id')
             data = callback.get('data')
+            if isinstance(data, str) and data.startswith('c:') and authorized and fresh:
+                # Новый формат: 'c:<id строки outbox>' (короткий callback_data).
+                job_id = await self.store.outbox_job(data[2:])
+                await self._handle_card_callback(callback_id, job_id, message)
+                continue
             if (isinstance(data, str) and data.startswith('card:') and authorized and fresh):
-                job_id = data.split(':', 1)[1]
-                if (isinstance(callback_id, str) and callback_id and len(callback_id) <= 512
-                        and time.time() >= await self.store.setting('telegram_next_poll', 0)):
-                    try:
-                        await self._api('answerCallbackQuery', {'callback_query_id': callback_id},
-                                        'telegram_next_poll', timeout=10)
-                    except TelegramError:
-                        pass
-                await self.store.mark_read(job_id)
-                await self.store.enqueue(await self.card_text(job_id), kind='reply')
-                await self._remove_old_keyboard(message)
+                # Старый формат (до исправления лимита callback_data).
+                await self._handle_card_callback(callback_id, data.split(':', 1)[1], message)
                 continue
             if (isinstance(callback_id, str) and callback_id and len(callback_id) <= 512
                     and time.time() >= await self.store.setting('telegram_next_poll', 0)):
@@ -217,6 +213,21 @@ class Telegram:
             if callback and authorized and fresh:
                 await self._remove_old_keyboard(message)
         return processed
+
+    async def _handle_card_callback(self, callback_id, job_id, message):
+        """Кнопка карточки: ack → read → карточка в ответ → снять клавиатуру."""
+        if (isinstance(callback_id, str) and callback_id and len(callback_id) <= 512
+                and time.time() >= await self.store.setting('telegram_next_poll', 0)):
+            try:
+                await self._api('answerCallbackQuery', {'callback_query_id': callback_id},
+                                'telegram_next_poll', timeout=10)
+            except TelegramError:
+                pass
+        if job_id:
+            await self.store.mark_read(job_id)
+        await self.store.enqueue(await self.card_text(job_id) if job_id else "Карточка не найдена.",
+                                 kind='reply')
+        await self._remove_old_keyboard(message)
 
     async def _manual(self, action, job_id):
         if action == "keep":
@@ -315,11 +326,13 @@ class Telegram:
                 continue
             payload = {'chat_id': self.config.owner_id, 'text': chunks[index],
                        'link_preview_options': {'is_disabled': True}}
-            if message['kind'] == 'card' and index == 0 and message.get('job_id'):
+            if message['kind'] == 'card' and index == 0 and message.get('id'):
                 # Inline-кнопка «Посмотреть вакансию и письмо» (раздел 10).
+                # callback_data короткий (лимит 64 байта): id строки outbox,
+                # а не полный source:native_id (у WWR/каналов бывает длинным).
                 payload['reply_markup'] = {'inline_keyboard': [[{
                     'text': 'Посмотреть вакансию и письмо',
-                    'callback_data': 'card:' + str(message['job_id'])}]]}
+                    'callback_data': 'c:' + str(message['id'])}]]}
             result = await self._api('sendMessage', payload, 'telegram_next_delivery', timeout=20)
             if result is None:
                 return 0

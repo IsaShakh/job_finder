@@ -234,6 +234,10 @@ class AsyncStore:
         """Явная отмена пропуска кластера: строки → переоценка."""
         return await self._call("unskip_cluster", job_id)
 
+    async def outbox_job(self, message_id):
+        """job_id по id строки outbox (для короткого callback_data карточки)."""
+        return await self._call("outbox_job", message_id)
+
     async def mark_read(self, job_id):
         """Кнопка карточки нажата: delivered → read (16.2)."""
         return await self._call("mark_read", job_id)
@@ -585,6 +589,16 @@ class AsyncStore:
             "UPDATE jobs SET status='read',last_read=?,updated=? WHERE id=? AND status='delivered'",
             (now(), now(), key))
         await self._conn.commit()
+
+    async def _op_outbox_job(self, message_id):
+        try:
+            message_id = int(message_id)
+        except (TypeError, ValueError):
+            return None
+        cursor = await self._conn.execute("SELECT job_id FROM outbox WHERE id=?", (message_id,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        return row[0] if row else None
 
     async def _op_set_letter(self, job_id, letter):
         key = Store.key(job_id)

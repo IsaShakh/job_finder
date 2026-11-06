@@ -140,9 +140,26 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
         await self.telegram.flush()
         sent = [data for method, data in self.requests if method == 'sendMessage']
         self.assertEqual(len(sent), 1)
-        self.assertEqual(sent[0]['reply_markup']['inline_keyboard'],
-                         [[{'text': 'Посмотреть вакансию и письмо', 'callback_data': 'card:hh:42'}]])
+        keyboard = sent[0]['reply_markup']['inline_keyboard']
+        self.assertEqual(keyboard[0][0]['text'], 'Посмотреть вакансию и письмо')
+        # Короткий callback_data (лимит Telegram — 64 байта): id строки outbox.
+        self.assertLessEqual(len(keyboard[0][0]['callback_data']), 64)
+        self.assertRegex(keyboard[0][0]['callback_data'], r'^c:\d+$')
         self.assertEqual((await self.store.get('hh:42'))['status'], 'delivered')
+
+    async def test_card_button_short_callback_data_for_long_ids(self):
+        # Длинные native_id (WWR slug) не ломают кнопку: callback_data — id outbox.
+        long_id = 'wwr:' + 'x' * 80
+        await self.store.discover('wwr', Vacancy(long_id.split(':')[1], 'Python', 'Python'))
+        await self.store.make_ready(long_id, Letter('Письмо', ['python_backend'], [], []), 'подходит')
+        await self.store.notify_ready(long_id, 'Вакансия', None)
+        await self.store.pause(False)
+        await self.store.set('telegram_next_delivery', 0)
+        await self.telegram.flush()
+        sent = [data for method, data in self.requests if method == 'sendMessage']
+        callback_data = sent[0]['reply_markup']['inline_keyboard'][0][0]['callback_data']
+        self.assertLessEqual(len(callback_data), 64)
+        self.assertRegex(callback_data, r'^c:\d+$')
 
     async def test_card_callback_sends_card_and_marks_read(self):
         await self.store.discover('hh', Vacancy('42', 'Python разработчик', 'Python', company='Акме'))
@@ -161,6 +178,26 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
         for expected in ('Python разработчик', '85/100', 'Точное письмо', 'Рекомендации по резюме',
                          'https://hh.ru/vacancy/42'):
             self.assertIn(expected, replies[0])
+        self.assertEqual((await self.store.get('hh:42'))['status'], 'read')
+
+    async def test_card_callback_by_outbox_id(self):
+        await self.store.discover('hh', Vacancy('42', 'Python разработчик', 'Python', company='Акме'))
+        await self.store.decide('hh:42', 'ready', 'подходит')
+        await self.store.set_letter('hh:42', Letter('Точное письмо', ['python_backend'], [], []))
+        await self.store.save_assessment('hh:42', {
+            'score': 85, 'score_reason': 'опыт совпадает', 'score_status': 'ok',
+            'advice': [], 'advice_status': 'ok', 'letter_status': 'ok', 'stamp': {}})
+        await self.store.delivered_job('hh:42')
+        await self.store.notify_ready('hh:42', 'Нашлась новая релевантная вакансия: X', None)
+        cursor = await self.store._conn.execute(
+            "SELECT id FROM outbox WHERE kind='card' AND job_id='hh:42'")
+        outbox_id = (await cursor.fetchone())[0]
+        await cursor.close()
+        self.updates = [callback(1, 'c:' + str(outbox_id))]
+        await self.telegram.poll_once()
+        replies = [row['text'] for row in await self.store.pending_messages() if row['kind'] == 'reply']
+        self.assertEqual(len(replies), 1)
+        self.assertIn('Точное письмо', replies[0])
         self.assertEqual((await self.store.get('hh:42'))['status'], 'read')
 
     async def test_skip_keep_unskip_commands_with_compound_ids(self):
