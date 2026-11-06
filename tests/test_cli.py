@@ -261,8 +261,8 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
                     await self.wait_status(config, 'fake:1001', 'ready')
                     db = Store(config.db_path)
                     try:
-                        # Пауза доставки не мешает поиску и подготовке.
-                        self.assertTrue(db.is_paused())
+                        # Перезапуск снимает паузу доставки; поиск и подготовка идут.
+                        self.assertFalse(db.is_paused())
                     finally:
                         db.close()
                 finally:

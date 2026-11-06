@@ -161,9 +161,12 @@ class AsyncStore:
         return await self._call("reassess", job_id, status, reason, letter, grade,
                                 grade_evidence, rules_version)
 
-    async def stale_row(self):
-        """Строка, оценённая старыми правилами; переоценивается в первом раунде."""
-        return await self._call("stale_row")
+    async def stale_row(self, sources=None):
+        """Строка, оценённая старыми правилами; переоценивается в первом раунде.
+
+        sources — включённые источники: строки отключённых (например, hh до
+        входа) не выбираются и ждут включения источника."""
+        return await self._call("stale_row", sources)
 
     async def make_ready(self, job_id, letter, reason, rules_version=None):
         return await self._call("make_ready", job_id, letter, reason, rules_version)
@@ -177,8 +180,8 @@ class AsyncStore:
     async def counts(self):
         return await self._call("counts")
 
-    async def first_found(self):
-        return await self._call("first_found")
+    async def first_found(self, sources=None):
+        return await self._call("first_found", sources)
 
     # ---------- настройки ----------
 
@@ -347,16 +350,28 @@ class AsyncStore:
              grade, grade_evidence, rules_version, now(), Store.key(job_id)))
         await self._conn.commit()
 
-    async def _op_stale_row(self):
+    @staticmethod
+    def _source_clause(sources):
+        """SQL-условие «id принадлежит одному из источников» (префикс id)."""
+        if not sources:
+            return "", []
+        clauses, args = [], []
+        for source in sources:
+            clauses.append("(id = ? OR id GLOB ?)")
+            args.extend([source, source + ":*"])
+        return " AND (" + " OR ".join(clauses) + ")", args
+
+    async def _op_stale_row(self, sources):
         cursor = await self._conn.execute(
             "SELECT value FROM settings WHERE key='rules_version'")
         row = await cursor.fetchone()
         await cursor.close()
         current = json.loads(row[0]) if row else None
+        clause, args = self._source_clause(sources)
         cursor = await self._conn.execute(
             "SELECT id FROM jobs WHERE status IN ('ready','rejected','needs_clarification')"
-            " AND (rules_version IS NULL OR rules_version != ?)"
-            " ORDER BY created,id LIMIT 1", (current,))
+            " AND (rules_version IS NULL OR rules_version != ?)" + clause +
+            " ORDER BY created,id LIMIT 1", (current, *args))
         row = await cursor.fetchone()
         await cursor.close()
         return row[0] if row else None
@@ -417,9 +432,11 @@ class AsyncStore:
         await cursor.close()
         return result
 
-    async def _op_first_found(self):
+    async def _op_first_found(self, sources):
+        clause, args = self._source_clause(sources)
         cursor = await self._conn.execute(
-            "SELECT id FROM jobs WHERE status='found' ORDER BY created,id LIMIT 1")
+            "SELECT id FROM jobs WHERE status='found'" + clause +
+            " ORDER BY created,id LIMIT 1", args)
         row = await cursor.fetchone()
         await cursor.close()
         return row[0] if row else None

@@ -338,6 +338,28 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.store.setting("browser_blocked"))
         self.assertEqual(await self.store.setting("attention_reason"), "Нужен вход")
 
+    async def test_start_resumes_delivery_pause(self):
+        await self.store.pause(True)
+        engine = self.engine([])
+        await engine.start()
+        self.assertFalse(await self.store.is_paused())
+
+    async def test_disabled_source_rows_are_left_untouched(self):
+        # hh не включён в SOURCES: его старые строки не готовятся и не
+        # переоцениваются, пока источник не вернётся.
+        await self.store.discover("hh", vacancy(id="900001"))
+        await self.store.decide("hh:900001", "rejected", "старое правило", rules_version="legacy")
+        job = vacancy(id="1001", salary=Salary(200000))
+        source = Probe("probe", fetch_for={"1001": job})
+        await self.store.discover("probe", vacancy(id="1001"))
+        engine = self.engine([source])
+        await engine.tick()
+        self.assertEqual((await self.store.get("hh:900001"))["status"], "rejected")
+        self.assertEqual((await self.store.get("hh:900001"))["rules_version"], "legacy")
+        self.assertEqual((await self.store.get("probe:1001"))["status"], "ready")
+        # После включения hh строка снова видна как stale.
+        self.assertEqual(await self.store.stale_row(["hh"]), "hh:900001")
+
     async def test_round_since_is_previous_t_start(self):
         seen = []
         class Tracking(Probe):

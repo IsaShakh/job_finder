@@ -42,6 +42,8 @@ class Engine:
         await self.store.recover_rounds()
         await self.store.set('browser_blocked',False)
         await self.store.set('attention_reason','')
+        # Пауза доставки снимается перезапуском: проблему исправили → запустили заново.
+        await self.store.set('paused', False)
 
     async def attention(self, message):
         logger.error("требуется действие: %s", message)
@@ -285,12 +287,14 @@ class Engine:
         await self.run_pending_rounds()
         if await self.resume_waiting():
             return
-        # Сначала переоценка строк, решённых старыми правилами (16.2).
-        stale=await self.store.stale_row()
+        # Сначала переоценка строк, решённых старыми правилами (16.2);
+        # только по включённым источникам.
+        enabled = [adapter.name for adapter in self.adapters]
+        stale=await self.store.stale_row(enabled)
         if stale:
             await self.reassess(stale)
             return
-        job_id=await self.store.first_found()
+        job_id=await self.store.first_found(enabled)
         if job_id:
             await self.prepare(job_id)
             return
