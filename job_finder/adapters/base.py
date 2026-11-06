@@ -12,6 +12,8 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Protocol
 
@@ -27,6 +29,30 @@ def strip_html(text):
         return ""
     text = re.sub(r"<[^>]+>", " ", text)
     return html.unescape(re.sub(r"\s+", " ", text)).strip()
+
+
+def parse_rss(text):
+    """RSS 2.0 → список словарей по элементам <item>; ошибки санитированы."""
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        raise AdapterError("Источник вернул некорректный RSS") from None
+    items = []
+    for node in root.iter("item"):
+        entry = {}
+        for child in node:
+            tag = child.tag.split("}")[-1]
+            entry[tag] = (child.text or "").strip()
+        items.append(entry)
+    return items
+
+
+def rfc822_to_iso(value):
+    try:
+        return parsedate_to_datetime(value).astimezone(timezone.utc).isoformat()
+    except (TypeError, ValueError):
+        return None
 
 
 @dataclass(frozen=True)
