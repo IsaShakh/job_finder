@@ -18,13 +18,18 @@ import httpx
 HELP = ('Команды:\n/search — запустить раунд поиска по всем источникам\n'
         '/status — состояние работы и источников\n'
         '/history — история\n/letter ID — письмо и подготовка\n'
-        '/clarifications [страница] — вакансии, требующие уточнения\n/help — помощь\n\n'
-        'Работа начинается при запуске скрипта на компьютере. Остановка — закрытием процесса. '
-        'Telegram показывает отчёты; откликаетесь вы сами, автоматической отправки нет.')
+        '/clarifications [страница] — вакансии, требующие уточнения\n'
+        '/keep ID — одобрить уточнение (карточка готовится)\n'
+        '/skip ID — пропустить вакансию и весь её кластер\n'
+        '/unskip ID — отменить пропуск кластера\n/help — помощь\n\n'
+        'ID — source:native_id (например, hh:123456). Откликаетесь вы сами, '
+        'автоматической отправки нет.')
 
 STATUS_LABELS = {'found': 'найдена', 'read': 'прочитана', 'rejected': 'отсеяна',
     'skipped': 'пропущена', 'needs_clarification': 'нужно уточнение',
     'ready': 'готова', 'delivered': 'доставлена', 'error': 'ошибка', 'closed': 'закрыта'}
+
+ID_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9_:-]{0,119}$')
 
 
 class TelegramError(RuntimeError):
@@ -72,6 +77,10 @@ class Telegram:
         if command == '/search':
             # Строка раунда создаётся в store.command до квитирования обновления.
             return 'search', None
+        if command in ('/keep', '/skip', '/unskip'):
+            if len(parts) != 2 or not ID_RE.match(parts[1]):
+                return command[1:], ('Укажите ID: /' + command[1:] + ' hh:123456')
+            return command[1:], parts[1]
         if command == '/status':
             counts = await self.store.counts()
             blocked = await self.store.setting('browser_blocked', False)
@@ -133,8 +142,8 @@ class Telegram:
                                                for key, value in sorted(counts.items())))
             return command[1:], '\n\n'.join(lines)
         if command == '/letter':
-            if len(parts) != 2 or not re.fullmatch(r'[0-9]+', parts[1]):
-                return 'letter', 'Укажите числовой ID: /letter 123456'
+            if len(parts) != 2 or not ID_RE.match(parts[1]):
+                return 'letter', 'Укажите ID: /letter hh:123456'
             row = await self.store.get(parts[1])
             if row is None or row['letter'] is None:
                 return 'letter', 'Сохранённое письмо для этой вакансии отсутствует.'
@@ -176,10 +185,26 @@ class Telegram:
                     await self.store.command(update['update_id'], 'retired_callback')
                 elif authorized and isinstance(raw, str):
                     action, response = await self._response(raw)
+                    if action in ('keep', 'skip', 'unskip'):
+                        response = await self._manual(action, response)
                     processed += bool(await self.store.command(update['update_id'], action, response))
                 else:
                     await self.store.command(update['update_id'], 'ignored')
             callback_id = callback.get('id')
+            data = callback.get('data')
+            if (isinstance(data, str) and data.startswith('card:') and authorized and fresh):
+                job_id = data.split(':', 1)[1]
+                if (isinstance(callback_id, str) and callback_id and len(callback_id) <= 512
+                        and time.time() >= await self.store.setting('telegram_next_poll', 0)):
+                    try:
+                        await self._api('answerCallbackQuery', {'callback_query_id': callback_id},
+                                        'telegram_next_poll', timeout=10)
+                    except TelegramError:
+                        pass
+                await self.store.mark_read(job_id)
+                await self.store.enqueue(await self.card_text(job_id), kind='reply')
+                await self._remove_old_keyboard(message)
+                continue
             if (isinstance(callback_id, str) and callback_id and len(callback_id) <= 512
                     and time.time() >= await self.store.setting('telegram_next_poll', 0)):
                 try:
@@ -192,6 +217,67 @@ class Telegram:
             if callback and authorized and fresh:
                 await self._remove_old_keyboard(message)
         return processed
+
+    async def _manual(self, action, job_id):
+        if action == "keep":
+            ok = await self.store.keep_job(job_id)
+            return ("Одобрено; карточка готовится и придёт уведомлением."
+                    if ok else "Не удалось одобрить: вакансия не в статусе уточнения.")
+        if action == "skip":
+            await self.store.skip_job(job_id)
+            return ("Пропущено вместе с кластером. Отмена: /unskip " + job_id)
+        if action == "unskip":
+            ok = await self.store.unskip_cluster(job_id)
+            return ("Пропуск кластера отменён; вакансии вернутся на переоценку."
+                    if ok else "Кластер не найден для этой вакансии.")
+
+    async def card_text(self, job_id):
+        """Полная карточка: вакансия, причина, ссылки кластера, оценка, письмо, советы."""
+        row = await self.store.get(job_id)
+        if row is None:
+            return "Карточка не найдена."
+        cluster = await self.store.cluster_rows(job_id)
+        vacancy = row["vacancy"]
+        lines = [(vacancy.title or "—") + " — " + (vacancy.company or "—")]
+        if vacancy.salary is not None:
+            lines.append("Зарплата: " + (vacancy.salary.raw or str(vacancy.salary.minimum)))
+        if vacancy.remote is True:
+            geo = vacancy.remote_geo or ""
+            lines.append("Формат: удалённая работа" + ((" (" + geo + ")") if geo else ""))
+        elif vacancy.location:
+            lines.append("Формат: " + vacancy.location)
+        else:
+            lines.append("Формат: не указан")
+        if vacancy.test_required:
+            lines.append("Тест: потребуется пройти при отклике")
+        lines.append("Причина: " + (row["reason"] or "—"))
+        if row["grade"]:
+            lines.append("Грейд: " + row["grade"] + ((" — " + row["grade_evidence"]) if row["grade_evidence"] else ""))
+        llm = row.get("llm") or {}
+        if llm.get("score_status") == "ok":
+            lines.append("Оценка: %s/100 — %s" % (llm.get("score"), llm.get("score_reason")))
+        else:
+            lines.append("Оценка: " + (llm.get("score_reason") or "оценка недоступна"))
+        links = []
+        for item in cluster:
+            item_vacancy = item["vacancy"]
+            if getattr(item_vacancy, "url", None):
+                links.append(item_vacancy.url)
+        links.insert(0, vacancy.url)
+        lines.append("Ссылки:\n" + "\n".join(dict.fromkeys(links)))
+        letter = row["letter"]
+        if letter is not None:
+            lines.append("Сопроводительное письмо:\n" + letter.text)
+            if letter.added_claims:
+                lines.append("Добавленные утверждения (только для вас):\n" + "\n".join(letter.added_claims))
+            if letter.preparation:
+                lines.append("Подготовка (только для вас):\n" + "\n".join(letter.preparation))
+        advice = llm.get("advice") or []
+        if advice:
+            lines.append("Рекомендации по резюме:\n" + "\n".join(
+                "- " + item["text"] + ("\n  Основание: " + item["grounds"] if item.get("grounds") else "")
+                for item in advice))
+        return "\n\n".join(lines)
 
     async def _remove_old_keyboard(self, message):
         # Bot API guarantees CallbackQuery.message originated from this bot.
@@ -229,6 +315,11 @@ class Telegram:
                 continue
             payload = {'chat_id': self.config.owner_id, 'text': chunks[index],
                        'link_preview_options': {'is_disabled': True}}
+            if message['kind'] == 'card' and index == 0 and message.get('job_id'):
+                # Inline-кнопка «Посмотреть вакансию и письмо» (раздел 10).
+                payload['reply_markup'] = {'inline_keyboard': [[{
+                    'text': 'Посмотреть вакансию и письмо',
+                    'callback_data': 'card:' + str(message['job_id'])}]]}
             result = await self._api('sendMessage', payload, 'telegram_next_delivery', timeout=20)
             if result is None:
                 return 0
@@ -240,6 +331,8 @@ class Telegram:
             await self.store.set('telegram_next_delivery', time.time() + 1.05)
             if index + 1 == len(chunks):
                 await self.store.delivered(message['id'])
+                if message['kind'] == 'card' and message.get('job_id'):
+                    await self.store.delivered_job(message['job_id'])
             return 1
         return 0
 

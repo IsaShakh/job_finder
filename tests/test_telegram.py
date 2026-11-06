@@ -131,6 +131,62 @@ class TelegramTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(set(data) == {'callback_query_id'} for method, data in self.requests
                             if method == 'answerCallbackQuery'))
 
+    async def test_card_delivery_with_inline_button_and_delivered_transition(self):
+        await self.store.discover('hh', Vacancy('42', 'Python разработчик', 'Python', company='Акме'))
+        await self.store.make_ready('hh:42', Letter('Письмо', ['python_backend'], [], []), 'подходит')
+        await self.store.notify_ready('hh:42', 'Нашлась новая релевантная вакансия: X — Y', None)
+        await self.store.pause(False)
+        await self.store.set('telegram_next_delivery', 0)
+        await self.telegram.flush()
+        sent = [data for method, data in self.requests if method == 'sendMessage']
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]['reply_markup']['inline_keyboard'],
+                         [[{'text': 'Посмотреть вакансию и письмо', 'callback_data': 'card:hh:42'}]])
+        self.assertEqual((await self.store.get('hh:42'))['status'], 'delivered')
+
+    async def test_card_callback_sends_card_and_marks_read(self):
+        await self.store.discover('hh', Vacancy('42', 'Python разработчик', 'Python', company='Акме'))
+        await self.store.decide('hh:42', 'ready', 'подходит')
+        await self.store.set_letter('hh:42', Letter('Точное письмо', ['python_backend'], [], []))
+        await self.store.save_assessment('hh:42', {
+            'score': 85, 'score_reason': 'опыт совпадает', 'score_status': 'ok',
+            'advice': [{'text': 'Подчеркнуть опыт', 'grounds': 'вакансия требует Python'}],
+            'advice_status': 'ok', 'letter_status': 'ok', 'stamp': {}})
+        await self.store.delivered_job('hh:42')
+        self.updates = [callback(1, 'card:hh:42')]
+        await self.telegram.poll_once()
+        self.assertIn(('answerCallbackQuery', {'callback_query_id': 'callback-1'}), self.requests)
+        replies = [row['text'] for row in await self.store.pending_messages()]
+        self.assertEqual(len(replies), 1)
+        for expected in ('Python разработчик', '85/100', 'Точное письмо', 'Рекомендации по резюме',
+                         'https://hh.ru/vacancy/42'):
+            self.assertIn(expected, replies[0])
+        self.assertEqual((await self.store.get('hh:42'))['status'], 'read')
+
+    async def test_skip_keep_unskip_commands_with_compound_ids(self):
+        await self.store.discover('hh', Vacancy('900001', 'Уточнить', 'Python'))
+        await self.store.decide('hh:900001', 'needs_clarification', 'не подтверждён формат')
+        self.updates = [message(1, '/keep hh:900001'), message(2, '/skip hh:900001'),
+                        message(3, '/unskip hh:900001'), message(4, '/skip без-id')]
+        await self.telegram.poll_once()
+        row = await self.store.get('hh:900001')
+        self.assertEqual(row['status'], 'found')  # keep → ready, skip → skipped, unskip → found
+        self.assertEqual(await self.store.setting('telegram_offset'), 5)
+        replies = '\n'.join(item['text'] for item in await self.store.pending_messages())
+        self.assertIn('Одобрено', replies)
+        self.assertIn('Пропущено вместе с кластером', replies)
+        self.assertIn('Пропуск кластера отменён', replies)
+        self.assertIn('Укажите ID', replies)
+
+    async def test_letter_command_accepts_compound_id(self):
+        await self.store.discover('hh', Vacancy('900002', 'Python dev', 'Python'))
+        await self.store.decide('hh:900002', 'ready', 'подходит')
+        await self.store.set_letter('hh:900002', Letter('Письмо', ['python_backend'], [], []))
+        self.updates = [message(1, '/letter hh:900002')]
+        await self.telegram.poll_once()
+        replies = [row['text'] for row in await self.store.pending_messages()]
+        self.assertIn('Письмо', replies[0])
+
     async def test_all_stale_callback_actions_are_inert_even_read_requests(self):
         await self.store.discover('hh', Vacancy('42', 'Python', 'Python'))
         await self.store.decide('42', 'rejected', 'Не подходит')

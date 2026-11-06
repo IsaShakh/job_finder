@@ -272,6 +272,65 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(writer.calls, 1)
         self.assertEqual((await self.store.get("probe:1001"))["letter"].text, first_letter)
 
+    async def test_ready_job_gets_card_notification_and_deliver_flag_gates_it(self):
+        job = vacancy(id="1001", salary=Salary(200000))
+        source = Probe("probe", fetch_for={"1001": job})
+        await self.store.discover("probe", vacancy(id="1001"))
+        engine = self.engine([source])
+        await engine.prepare("probe:1001")
+        await engine.tick()
+        cursor = await self.store._conn.execute(
+            "SELECT text,kind,job_id FROM outbox WHERE kind='card'")
+        cards = [tuple(item) for item in await cursor.fetchall()]
+        await cursor.close()
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0][2], "probe:1001")
+        self.assertIn("Нашлась новая релевантная вакансия", cards[0][0])
+        self.assertIn("Python разработчик", cards[0][0])
+        # DELIVER=false → уведомления копятся в ready.
+        await self.store.set("DELIVER", False)
+        job2 = vacancy(id="1002", salary=Salary(200000))
+        source.fetch_for["1002"] = job2
+        await self.store.discover("probe", vacancy(id="1002"))
+        await engine.prepare("probe:1002")
+        await engine.tick()
+        cursor = await self.store._conn.execute("SELECT COUNT(*) FROM outbox WHERE kind='card'")
+        self.assertEqual((await cursor.fetchone())[0], 1)
+        await cursor.close()
+        self.assertEqual((await self.store.get("probe:1002"))["status"], "ready")
+
+    async def test_card_notification_is_unique_per_cluster(self):
+        await self.store.discover("probe", vacancy(id="1001", title="Python", company="Акме"))
+        await self.store.make_ready("probe:1001",
+                                    Letter("Письмо", ["python_backend"], [], []), "подходит")
+        await self.store.discover("probe", vacancy(id="1002", title="Python", company="Акме"))
+        await self.store.make_ready("probe:1002",
+                                    Letter("Письмо", ["python_backend"], [], []), "подходит")
+        await self.store.join_cluster("probe:1002", ["probe:1001"])
+        engine = self.engine([])
+        await engine.notify_ready("probe:1001")
+        await engine.notify_ready("probe:1002")
+        cursor = await self.store._conn.execute("SELECT COUNT(*) FROM outbox WHERE kind='card'")
+        self.assertEqual((await cursor.fetchone())[0], 1)
+        await cursor.close()
+
+    async def test_keep_generates_letter_via_notification(self):
+        job = vacancy(id="1001", salary=Salary(200000))
+        source = Probe("probe", fetch_for={"1001": job})
+        await self.store.discover("probe", vacancy(id="1001"))
+        await self.store.decide("probe:1001", "needs_clarification", "не подтверждён формат",
+                                rules_version="v3")
+        engine = self.engine([source])
+        self.assertTrue(await self.store.keep_job("probe:1001"))
+        await engine.tick()
+        row = await self.store.get("probe:1001")
+        self.assertEqual(row["status"], "ready")
+        self.assertEqual(row["manual_decision"], "keep")
+        cursor = await self.store._conn.execute("SELECT COUNT(*) FROM outbox WHERE kind='card'")
+        self.assertEqual((await cursor.fetchone())[0], 1)
+        await cursor.close()
+        self.assertIsNotNone((await self.store.get("probe:1001"))["letter"])
+
     async def test_attention_pauses_delivery_and_blocks_work(self):
         engine = self.engine([])
         await engine.attention("Нужен вход")

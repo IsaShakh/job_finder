@@ -165,8 +165,8 @@ class AsyncStore:
         """Строка, оценённая старыми правилами; переоценивается в первом раунде."""
         return await self._call("stale_row")
 
-    async def make_ready(self, job_id, letter, reason):
-        return await self._call("make_ready", job_id, letter, reason)
+    async def make_ready(self, job_id, letter, reason, rules_version=None):
+        return await self._call("make_ready", job_id, letter, reason, rules_version)
 
     async def save_letter(self, job_id, letter):
         return await self._call("save_letter", job_id, letter)
@@ -196,14 +196,51 @@ class AsyncStore:
 
     # ---------- outbox/inbox ----------
 
-    async def enqueue(self, text, kind="event"):
-        return await self._call("enqueue", text, kind)
+    async def enqueue(self, text, kind="event", job_id=None, cluster_id=None):
+        return await self._call("enqueue", text, kind, job_id, cluster_id)
 
     async def pending_messages(self):
         return await self._call("pending_messages")
 
     async def delivered(self, message_id):
         return await self._call("delivered", message_id)
+
+    async def notify_ready(self, job_id, text, cluster_id):
+        """Карточка-уведомление: уникально по кластеру/строке (16.3, раздел 5)."""
+        return await self._call("notify_ready", job_id, text, cluster_id)
+
+    async def card_exists(self, job_id):
+        return await self._call("card_exists", job_id)
+
+    async def next_ready_without_card(self):
+        return await self._call("next_ready_without_card")
+
+    async def cluster_rows(self, job_id):
+        """Все строки кластера (ссылки для карточки)."""
+        return await self._call("cluster_rows", job_id)
+
+    async def keep_job(self, job_id):
+        """Ручное решение /keep: needs_clarification → ready (16.2)."""
+        return await self._call("keep_job", job_id)
+
+    async def skip_job(self, job_id):
+        """Ручное решение /skip: строка и её кластер → skipped (16.3)."""
+        return await self._call("skip_job", job_id)
+
+    async def unskip_cluster(self, job_id):
+        """Явная отмена пропуска кластера: строки → переоценка."""
+        return await self._call("unskip_cluster", job_id)
+
+    async def mark_read(self, job_id):
+        """Кнопка карточки нажата: delivered → read (16.2)."""
+        return await self._call("mark_read", job_id)
+
+    async def set_letter(self, job_id, letter):
+        return await self._call("set_letter", job_id, letter)
+
+    async def delivered_job(self, job_id):
+        """Карточка отправлена: ready → delivered (16.2)."""
+        return await self._call("delivered_job", job_id)
 
     async def command(self, update_id, action, response=None):
         return await self._call("command", update_id, action, response)
@@ -324,10 +361,12 @@ class AsyncStore:
         await cursor.close()
         return row[0] if row else None
 
-    async def _op_make_ready(self, job_id, letter, reason):
+    async def _op_make_ready(self, job_id, letter, reason, rules_version):
         await self._conn.execute(
-            "UPDATE jobs SET letter=?,status='ready',reason=?,updated=? WHERE id=? AND status='found'",
-            (dump(letter.to_dict()) if letter is not None else None, reason, now(), Store.key(job_id)))
+            "UPDATE jobs SET letter=?,status='ready',reason=?,rules_version=?,updated=?"
+            " WHERE id=? AND status='found'",
+            (dump(letter.to_dict()) if letter is not None else None, reason, rules_version,
+             now(), Store.key(job_id)))
         await self._conn.commit()
 
     async def _op_save_assessment(self, job_id, llm):
@@ -397,22 +436,149 @@ class AsyncStore:
             (key, dump(value)))
         await self._conn.commit()
 
-    async def _op_enqueue(self, text, kind):
-        if kind not in ("event", "reply", "success"):
+    async def _op_enqueue(self, text, kind, job_id, cluster_id):
+        if kind not in ("event", "reply", "success", "notice", "card"):
             raise ValueError("Неизвестный тип уведомления")
-        await self._conn.execute("INSERT INTO outbox(text,created,kind) VALUES(?,?,?)",
-                                 (text, now(), kind))
+        await self._conn.execute(
+            "INSERT INTO outbox(text,created,kind,job_id,cluster_id) VALUES(?,?,?,?,?)",
+            (text, now(), kind, job_id, cluster_id))
         await self._conn.commit()
 
     async def _op_pending_messages(self):
         cursor = await self._conn.execute(
-            "SELECT * FROM outbox WHERE sent=0 AND kind IN ('reply','success') ORDER BY id LIMIT 20")
+            "SELECT * FROM outbox WHERE sent=0 AND kind IN ('reply','success','notice','card')"
+            " ORDER BY id LIMIT 20")
         rows = await cursor.fetchall()
         await cursor.close()
         return [_as_dict(row) for row in rows]
 
     async def _op_delivered(self, message_id):
         await self._conn.execute("UPDATE outbox SET sent=1 WHERE id=?", (message_id,))
+        await self._conn.commit()
+
+    async def _op_notify_ready(self, job_id, text, cluster_id):
+        key = Store.key(job_id)
+        # Уникальность карточки по кластеру/строке (частичные уникальные индексы).
+        await self._conn.execute(
+            "INSERT OR IGNORE INTO outbox(text,created,kind,job_id,cluster_id)"
+            " VALUES(?,?,'card',?,?)", (text, now(), key, cluster_id))
+        cursor = await self._conn.execute(
+            "SELECT changes()")
+        inserted = (await cursor.fetchone())[0]
+        await cursor.close()
+        await self._conn.commit()
+        return inserted > 0
+
+    async def _op_card_exists(self, job_id):
+        key = Store.key(job_id)
+        cursor = await self._conn.execute(
+            "SELECT COUNT(*) FROM outbox WHERE kind='card' AND (job_id=? OR"
+            " cluster_id=(SELECT cluster_id FROM jobs WHERE id=?))", (key, key))
+        count = (await cursor.fetchone())[0]
+        await cursor.close()
+        return count > 0
+
+    async def _op_next_ready_without_card(self):
+        cursor = await self._conn.execute(
+            "SELECT j.id FROM jobs j WHERE j.status='ready' AND NOT EXISTS"
+            " (SELECT 1 FROM outbox o WHERE o.kind='card' AND"
+            "  (o.job_id=j.id OR (j.cluster_id IS NOT NULL AND o.cluster_id=j.cluster_id)))"
+            " ORDER BY j.updated,j.id LIMIT 1")
+        row = await cursor.fetchone()
+        await cursor.close()
+        return row[0] if row else None
+
+    async def _op_cluster_rows(self, job_id):
+        key = Store.key(job_id)
+        cursor = await self._conn.execute("SELECT cluster_id FROM jobs WHERE id=?", (key,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        if row is None or row[0] is None:
+            return [await self._op_get(key)]
+        cursor = await self._conn.execute(
+            "SELECT id FROM jobs WHERE cluster_id=? ORDER BY id", (row[0],))
+        ids = [item[0] for item in await cursor.fetchall()]
+        await cursor.close()
+        return [await self._op_get(item) for item in ids]
+
+    async def _op_keep_job(self, job_id):
+        key = Store.key(job_id)
+        cursor = await self._conn.execute(
+            "UPDATE jobs SET status='ready',manual_decision='keep',manual_decision_at=?,updated=?"
+            " WHERE id=? AND status='needs_clarification'", (now(), now(), key))
+        changed = cursor.rowcount > 0
+        await cursor.close()
+        await self._conn.commit()
+        return changed
+
+    async def _op_skip_job(self, job_id):
+        key = Store.key(job_id)
+        cursor = await self._conn.execute(
+            "UPDATE jobs SET manual_decision='skip',manual_decision_at=?,updated=? WHERE id=?",
+            (now(), now(), key))
+        await cursor.close()
+        cursor = await self._conn.execute("SELECT cluster_id FROM jobs WHERE id=?", (key,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        cluster_id = row[0] if row else None
+        if cluster_id is not None:
+            await self._conn.execute(
+                "UPDATE clusters SET status='skipped',skipped_at=? WHERE id=?", (now(), cluster_id))
+            await self._conn.execute(
+                "UPDATE jobs SET status='skipped',reason='Пропущен кластер (вручную)',updated=?"
+                " WHERE cluster_id=? AND status NOT IN ('skipped','closed')", (now(), cluster_id))
+        else:
+            await self._conn.execute(
+                "UPDATE jobs SET status='skipped',reason='Пропущено вручную (/skip)',updated=?"
+                " WHERE id=?", (now(), key))
+        await self._conn.commit()
+        return True
+
+    async def _op_unskip_cluster(self, job_id):
+        key = Store.key(job_id)
+        cursor = await self._conn.execute("SELECT cluster_id FROM jobs WHERE id=?", (key,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        if row is None:
+            return False
+        if row[0] is None:
+            # Строка без кластера: отмена ручного пропуска самой строки.
+            await self._conn.execute(
+                "UPDATE jobs SET status='found',reason='',rules_version=NULL,"
+                " manual_decision=NULL,manual_decision_at=NULL,updated=? WHERE id=? AND status='skipped'",
+                (now(), key))
+            await self._conn.commit()
+            return True
+        cluster_id = row[0]
+        await self._conn.execute(
+            "UPDATE clusters SET status='none',skipped_at=NULL WHERE id=?", (cluster_id,))
+        # Строки кластера → переоценка в первом раунде (16.2).
+        await self._conn.execute(
+            "UPDATE jobs SET status='found',reason='',rules_version=NULL,manual_decision=NULL,"
+            " manual_decision_at=NULL,updated=? WHERE cluster_id=? AND status='skipped'",
+            (now(), cluster_id))
+        await self._conn.commit()
+        return True
+
+    async def _op_mark_read(self, job_id):
+        key = Store.key(job_id)
+        await self._conn.execute(
+            "UPDATE jobs SET status='read',last_read=?,updated=? WHERE id=? AND status='delivered'",
+            (now(), now(), key))
+        await self._conn.commit()
+
+    async def _op_set_letter(self, job_id, letter):
+        key = Store.key(job_id)
+        await self._conn.execute(
+            "UPDATE jobs SET letter=?,updated=? WHERE id=? AND status='ready'",
+            (dump(letter.to_dict()), now(), key))
+        await self._conn.commit()
+
+    async def _op_delivered_job(self, job_id):
+        key = Store.key(job_id)
+        await self._conn.execute(
+            "UPDATE jobs SET status='delivered',updated=? WHERE id=? AND status='ready'",
+            (now(), key))
         await self._conn.commit()
 
     async def _op_command(self, update_id, action, response):

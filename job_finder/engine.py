@@ -191,14 +191,14 @@ class Engine:
             current_rules = await self.store.setting('rules_version')
             if assessment.status=="ready":
                 letter=await self._card(job_id, vacancy, hash_value, current_rules)
-                await self.store.make_ready(job_id,letter,reason)
+                await self.store.make_ready(job_id,letter,reason,current_rules)
             else:
                 await self.store.decide(job_id,assessment.status,reason,
                                         grade=assessment.grade,
                                         grade_evidence=assessment.grade_evidence,
                                         rules_version=current_rules)
                 if assessment.status=="needs_clarification":
-                    await self.store.enqueue("Нужно уточнение: "+vacancy.title+"\n"+vacancy.url+"\n"+reason)
+                    await self.store.enqueue("Нужно уточнение: "+vacancy.title+"\n"+vacancy.url+"\n"+reason+"\n/keep "+Store.native(job_id)+" — подходит\n/skip "+Store.native(job_id)+" — пропустить", kind="notice")
         except VacancyUnavailable as exc:
             await self.store.decide(job_id,"needs_clarification",str(exc))
         except AttentionRequired as exc:
@@ -257,6 +257,22 @@ class Engine:
             text+="\n\nПропуски из-за теста с предыдущей сводки:\n"+"\n".join('https://hh.ru/vacancy/'+r['job_id']+" — "+r["reason"] for r in skipped)
         return text
 
+    async def notify_ready(self, job_id):
+        """Уведомление «Нашлась новая релевантная вакансия» (раздел 10)."""
+        if not await self.store.setting('DELIVER', True):
+            return False  # DELIVER=false → уведомления копятся в ready
+        row = await self.store.get(job_id)
+        if row is None or row["status"] != "ready":
+            return False
+        vacancy = row["vacancy"]
+        if row["letter"] is None:
+            letter = await self._card(job_id, vacancy, row["content_hash"] or content_hash(vacancy),
+                                      await self.store.setting('rules_version'))
+            if letter is not None:
+                await self.store.set_letter(job_id, letter)
+        text = "Нашлась новая релевантная вакансия: %s — %s" % (vacancy.title, vacancy.company or "—")
+        return await self.store.notify_ready(job_id, text, row["cluster_id"])
+
     async def tick(self):
         if await self.store.setting("browser_blocked",False):
             return
@@ -271,6 +287,11 @@ class Engine:
         job_id=await self.store.first_found()
         if job_id:
             await self.prepare(job_id)
+            return
+        # Уведомления по готовым карточкам (по одной за тик).
+        job_id=await self.store.next_ready_without_card()
+        if job_id:
+            await self.notify_ready(job_id)
             return
         day=datetime.now().astimezone().date().isoformat()
         if await self.store.setting("digest_day") != day:

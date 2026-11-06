@@ -91,6 +91,10 @@ INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_jobs_norm_company ON jobs(norm_company)",
     "CREATE INDEX IF NOT EXISTS idx_jobs_norm_title ON jobs(norm_title)",
     "CREATE INDEX IF NOT EXISTS idx_jobs_cluster_id ON jobs(cluster_id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_card_cluster ON outbox(cluster_id)"
+    " WHERE kind='card' AND cluster_id IS NOT NULL",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_outbox_card_job ON outbox(job_id)"
+    " WHERE kind='card' AND job_id IS NOT NULL",
 )
 
 

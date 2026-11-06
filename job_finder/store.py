@@ -72,6 +72,10 @@ CREATE TABLE llm_calls (
 CREATE INDEX idx_jobs_norm_company ON jobs(norm_company);
 CREATE INDEX idx_jobs_norm_title ON jobs(norm_title);
 CREATE INDEX idx_jobs_cluster_id ON jobs(cluster_id);
+CREATE UNIQUE INDEX idx_outbox_card_cluster ON outbox(cluster_id)
+  WHERE kind='card' AND cluster_id IS NOT NULL;
+CREATE UNIQUE INDEX idx_outbox_card_job ON outbox(job_id)
+  WHERE kind='card' AND job_id IS NOT NULL;
 '''
 
 PILOT_REASON = "отклик уже отправлен ранее (архив)"
@@ -167,9 +171,9 @@ class Store:
             if cursor.rowcount:
                 self._record_skip(job_id,status,reason,previous)
 
-    def make_ready(self, job_id, letter, reason):
+    def make_ready(self, job_id, letter, reason, rules_version=None):
         with self.conn:
-            self.conn.execute("UPDATE jobs SET letter=?,status='ready',reason=?,updated=? WHERE id=? AND status='found'",(dump(letter.to_dict()),reason,now(),self.key(job_id)))
+            self.conn.execute("UPDATE jobs SET letter=?,status='ready',reason=?,rules_version=?,updated=? WHERE id=? AND status='found'",(dump(letter.to_dict()) if letter is not None else None,reason,rules_version,now(),self.key(job_id)))
 
     def save_letter(self, job_id, letter):
         with self.conn:
