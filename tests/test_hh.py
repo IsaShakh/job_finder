@@ -86,7 +86,18 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_config_exposes_api_token_path(self):
         self.assertEqual(self.config.api_token_path,
-                         (self.root / ".state" / "api-token.json").resolve())
+                         (self.root / ".state" / "tokens" / "hh.json").resolve())
+
+    async def test_token_store_reads_legacy_path_and_migrates_on_save(self):
+        from job_finder.adapters.base import TokenStore
+        legacy = self.config.state_dir / "api-token.json"
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        TokenStore(legacy).save({"access_token": "USERLEGACY", "refresh_token": "R"})
+        store = TokenStore(self.config.api_token_path, legacy_path=legacy)
+        self.assertEqual(store.load()["access_token"], "USERLEGACY")
+        store.save({"access_token": "USERNEW", "refresh_token": "R"})
+        self.assertFalse(legacy.exists())  # переехали на tokens/hh.json
+        self.assertEqual(TokenStore(self.config.api_token_path).load()["access_token"], "USERNEW")
 
     async def test_token_store_is_atomic_and_private(self):
         store = TokenStore(self.config.api_token_path)

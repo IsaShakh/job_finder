@@ -11,7 +11,7 @@ while true; do
   print "Токены и ключи задаются в файле .env (пример — .env.example)"
   print "1 — Войти в HH (API, без браузера)"
   print "2 — Запустить агента"
-  print "3 — Проверить настройки"
+  print "3 — Проверить настройки и площадки"
   print "0 — Закрыть"
   read "choice?Выберите действие: " || exit 0
   case "$choice" in

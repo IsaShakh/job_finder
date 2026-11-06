@@ -108,7 +108,8 @@ class HHClient(OAuthClient):
 
     def __init__(self, config, http_client=None, min_interval=MIN_REQUEST_INTERVAL):
         super().__init__(config, config.api_token_path,
-                         http_client=http_client, min_interval=min_interval)
+                         http_client=http_client, min_interval=min_interval,
+                         legacy_token_path=config.state_dir / "api-token.json")
 
     def refresh_payload(self, refresh):
         return {

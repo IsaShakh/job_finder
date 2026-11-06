@@ -24,7 +24,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual([profile.name for profile in config.profiles], ['ru', 'intl'])
         self.assertEqual(config.max_search_pages, 100)
         self.assertEqual(config.db_path, self.root / '.state' / 'agent.sqlite3')
-        self.assertEqual(config.api_token_path, self.root / '.state' / 'api-token.json')
+        self.assertEqual(config.api_token_path, self.root / '.state' / 'tokens' / 'hh.json')
         self.assertFalse(config.state_dir.exists())
 
     def test_profiles_are_selectable_and_validated(self):

@@ -6,6 +6,7 @@
 остальные источники продолжают работу.
 """
 import asyncio
+import logging
 import time
 from datetime import datetime, timezone
 from .dedupe import (EmbeddingClient, content_hash, embedding_input,
@@ -14,6 +15,8 @@ from .models import AttentionRequired, RateLimited, VacancyUnavailable
 from .rules import evaluate_all
 from .store import Store
 from .writer import PROMPT_VERSION, Writer
+
+logger = logging.getLogger("job_finder.engine")
 
 # Правило тестов после удаления автоотклика (решение 05.11.2026):
 # тест не отклоняет вакансию, а помечается в карточке.
@@ -41,6 +44,7 @@ class Engine:
         await self.store.set('attention_reason','')
 
     async def attention(self, message):
+        logger.error("требуется действие: %s", message)
         await self.store.pause(True)
         # Stop work until the user fixes access and restarts locally.
         await self.store.set("browser_blocked",True)
@@ -61,6 +65,7 @@ class Engine:
         return await adapter.search(None, since)
 
     async def _run_round(self, round_id, pending=None):
+        logger.info("раунд %s начат; источники: %s", round_id, ", ".join(a.name for a in self.adapters))
         t_start = utc_now()
         pending = {adapter.name for adapter in self.adapters} if pending is None else set(pending)
         while pending:
@@ -85,6 +90,7 @@ class Engine:
                 return
         await self.store.round_done(round_id)
         await self.store.enqueue(await self._round_summary())
+        logger.info("раунд %s завершён", round_id)
 
     async def _round_summary(self):
         lines = ["Раунд поиска завершён."]

@@ -214,6 +214,33 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 db.close()
 
+    async def test_doctor_reports_sources_without_network(self):
+        from job_finder.__main__ import doctor
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.dict(os.environ, {'SOURCES': 'fake,telegram'}, clear=True):
+                config = replace(Config.load(Path(temp)),
+                                 telegram_token='123:test-token', owner_id=123)
+            output = io.StringIO()
+            with redirect_stdout(output):
+                await doctor(config)
+            text = output.getvalue()
+            self.assertIn('fake', text)
+            self.assertIn('тестовый источник', text)
+            self.assertIn('telegram', text)
+            self.assertIn('нет сессии', text)
+
+    def test_setup_logging_creates_rotating_agent_log(self):
+        from job_finder.__main__ import setup_logging
+        with tempfile.TemporaryDirectory() as temp:
+            with patch.dict(os.environ, {}, clear=True):
+                config = Config.load(Path(temp))
+            log = setup_logging(config)
+            log.info("тестовая запись лога")
+            path = config.state_dir / "agent.log"
+            self.assertTrue(path.exists())
+            self.assertIn("тестовая запись лога", path.read_text(encoding="utf-8"))
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
     async def test_run_without_api_token_fails_with_guidance(self):
         with tempfile.TemporaryDirectory() as temp:
             with patch.dict(os.environ, {}, clear=True):

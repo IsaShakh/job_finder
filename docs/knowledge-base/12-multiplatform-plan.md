@@ -357,3 +357,23 @@ class SourceAdapter(Protocol):
 - **Команда `/search` не теряется:** приём команды = строка `round_requests(id, state)` сохраняется **до** квитирования обновления (продвижения `telegram_offset`); краш до сохранения → Telegram перешлёт обновление в течение 24 ч (свойство продукта). На старте `queued`/`active` → раунд доигрывается идемпотентно.
 - **Состояния раунда:** `queued → active → waiting → done`. Новый `/search` в `queued`/`active` игнорируется; в `waiting` (часть источников на таймерах `RateLimited`) — **принимается**: запускается новый раунд для всех готовых источников, источники на таймере присоединяются к нему по срабатыванию (N8).
 - **Честность покрытия:** первый обход канала, RSS-пагинация с ограниченной историей, длительный простой — помечаются `incomplete`/`coverage_gap` в отчёте; полнота истории не утверждается молча.
+
+## 17. Соответствие кода (выверка КБ ↔ код, этап 7, 06.11.2026)
+
+Фактическая структура после этапов 0–6; КБ 01–11 описывают состояние до
+переделки (исторический срез), целевое состояние — этот документ.
+
+| Компонент плана | Файл(ы) | Статус |
+| --- | --- | --- |
+| CLI (init/configure/pair/doctor/api-login/search/run/status) | `job_finder/__main__.py` | ✓; doctor — сетевой по SOURCES (этап 7) |
+| Конфиг (SOURCES/PROFILES/TG_CHANNELS) | `job_finder/config.py` | ✓ |
+| Каноническая модель | `job_finder/models.py` | ✓ + `source_url` (URL строит адаптер) |
+| Правила v3 (7, 7.3, R1/R9/N10) | `job_finder/rules.py` | ✓ |
+| Хранилище (схема v4, миграция) | `job_finder/store.py`, `job_finder/migrate.py` | ✓; асинхронный рантайм — `async_store.py` (aiosqlite, один потребитель, R8) |
+| Раунд поиска (16.5, R5) | `job_finder/engine.py` | ✓ round_requests, waiting/next_retry |
+| Дедупликация (8, 16.3) | `job_finder/dedupe.py` | ✓ |
+| Writer v2 (9, R7/R10) | `job_finder/writer.py` | ✓ llm_calls, кэш по версиям |
+| Telegram (10) | `job_finder/telegram.py` | ✓ карточки, /skip /keep /unskip, DELIVER |
+| Адаптеры (6, 16.1) | `job_finder/adapters/` (base, hh, remoteok, habr, wwr, telegram_channels, fake) | ✓ |
+| Лог с ротацией | `.state/agent.log` (RotatingFileHandler 1 МБ × 3) | ✓ этап 7 |
+| Токены площадок | `.state/tokens/<platform>.json` (hh.json; legacy-чтение `.state/api-token.json`) | ✓ этап 7 |

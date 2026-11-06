@@ -89,16 +89,25 @@ class SourceAdapter(Protocol):
 
 
 class TokenStore:
-    """Файл токенов OAuth (0600, атомарная запись через .tmp + os.replace)."""
+    """Файл токенов OAuth (0600, атомарная запись через .tmp + os.replace).
 
-    def __init__(self, path):
+    legacy_path — старый путь хранения: при его наличии токены читаются
+    оттуда, а пишутся уже в новый (переезд .state/api-token.json →
+    .state/tokens/<platform>.json, этап 7)."""
+
+    def __init__(self, path, legacy_path=None):
         self.path = Path(path)
+        self.legacy_path = Path(legacy_path) if legacy_path else None
 
     def load(self):
-        if not self.path.exists():
-            return {}
+        if not self.path.exists() and self.legacy_path is not None and self.legacy_path.exists():
+            return self._read(self.legacy_path)
+        return self._read(self.path)
+
+    @staticmethod
+    def _read(path):
         try:
-            return json.loads(self.path.read_text(encoding="utf-8"))
+            return json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return {}
 
@@ -109,6 +118,11 @@ class TokenStore:
         os.chmod(temporary, 0o600)
         os.replace(temporary, self.path)
         os.chmod(self.path, 0o600)
+        if self.legacy_path is not None:
+            try:
+                self.legacy_path.unlink()
+            except FileNotFoundError:
+                pass
 
     def clear(self):
         try:
@@ -151,9 +165,9 @@ class OAuthClient:
 
     oauth_token_url = None
 
-    def __init__(self, config, token_path, http_client=None, min_interval=0.4):
+    def __init__(self, config, token_path, http_client=None, min_interval=0.4, legacy_token_path=None):
         self.config = config
-        self.tokens = TokenStore(token_path)
+        self.tokens = TokenStore(token_path, legacy_path=legacy_token_path)
         self.http_client = http_client
         self.owns_client = http_client is None
         self.limiter = RateLimiter(min_interval)

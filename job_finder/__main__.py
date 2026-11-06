@@ -132,14 +132,71 @@ async def pair(config):
         raise ValueError("Время привязки истекло. Запустите pair снова")
 
 
-def doctor(config):
-    checks=[("Токен Telegram",bool(config.telegram_token)),("Владелец Telegram",config.owner_id>0),
-            ("Ключ и модель для писем",bool(config.llm_api_key and config.llm_model)),
-            ("Токен API HH (вход через api-login)",config.api_token_path.exists())]
-    print("Источник вакансий: API HH (без браузера)")
-    for label,ok in checks:
-        print(("✓ " if ok else "○ ")+label)
-    print("Проверка локальная: токены и вход на сайте пока не проверялись по сети.")
+def setup_logging(config):
+    """Лог .state/agent.log с ротацией (этап 7): 1 МБ × 3 файла, 0600."""
+    import logging
+    from logging.handlers import RotatingFileHandler
+    config.state_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(config.state_dir, 0o700)
+    path = config.state_dir / "agent.log"
+    handler = RotatingFileHandler(str(path), maxBytes=1_000_000, backupCount=3, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root = logging.getLogger()
+    if not any(isinstance(existing, RotatingFileHandler) and existing.baseFilename == str(path)
+               for existing in root.handlers):
+        root.addHandler(handler)
+        root.setLevel(logging.INFO)
+    try:
+        os.chmod(path, 0o600)
+    except FileNotFoundError:
+        pass
+    return logging.getLogger("job_finder")
+
+
+async def doctor(config):
+    """Локальные проверки + сетевые проверки площадок из SOURCES (этап 7)."""
+    import httpx
+    from .adapters.base import AdapterError
+    from .adapters.habr import FEED_URL as HABR_FEED
+    from .adapters.remoteok import API_URL as REMOTEOK_URL
+    from .adapters.wwr import FEED_URL as WWR_FEED
+    checks = [("Токен Telegram", bool(config.telegram_token)),
+              ("Владелец Telegram", config.owner_id > 0),
+              ("Ключ и модель для писем", bool(config.llm_api_key and config.llm_model)),
+              ("Токен API HH (вход через api-login)",
+               config.api_token_path.exists() or (config.state_dir / "api-token.json").exists())]
+    print("Источники вакансий: " + ", ".join(config.sources))
+    for label, ok in checks:
+        print(("✓ " if ok else "○ ") + label)
+    async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+        for name in config.sources:
+            ok, detail = False, ""
+            try:
+                if name == "hh":
+                    from .adapters.hh import HHClient
+                    source = HHClient(config)
+                    me = await source.me()
+                    detail = "вход: %s %s" % (me.get("first_name") or "", me.get("last_name") or "")
+                    ok = bool(me.get("id"))
+                    await source.close()
+                elif name == "remoteok":
+                    response = await client.get(REMOTEOK_URL)
+                    ok = response.status_code == 200
+                elif name == "habr":
+                    response = await client.get(HABR_FEED)
+                    ok = response.status_code == 200
+                elif name == "wwr":
+                    response = await client.get(WWR_FEED)
+                    ok = response.status_code == 200
+                elif name == "telegram":
+                    ok = (config.state_dir / "tg_probe.session").exists()
+                    detail = "сессия есть" if ok else "нет сессии (tg_probe_login.command)"
+                elif name == "fake":
+                    ok, detail = True, "тестовый источник"
+            except Exception as exc:
+                detail = type(exc).__name__
+            print(("✓ " if ok else "○ ") + name + ((": " + detail) if detail else ""))
+    print("Проверка локальная: пароли и коды входа по сети не проверяются.")
 
 
 async def api_login(config):
@@ -213,10 +270,12 @@ async def api_command(config, command):
     from .async_store import AsyncStore
     from .engine import Engine
     from .writer import Writer
+    log = setup_logging(config)
     if command=="run" and (not config.telegram_token or config.owner_id<=0):
         raise ValueError("Сначала настройте Telegram: configure, затем pair")
-    if "hh" in config.sources and not config.api_token_path.exists():
+    if "hh" in config.sources and not (config.api_token_path.exists() or (config.state_dir / "api-token.json").exists()):
         raise ValueError("Сначала выполните вход в API HH: python -m job_finder api-login")
+    log.info("запуск: %s; источники: %s", command, ", ".join(config.sources))
     store=AsyncStore(config.db_path)
     await store.start()
     try:
@@ -254,7 +313,7 @@ def main(argv=None):
             return 0
         config=Config.load(root)
         if args.command=="doctor":
-            doctor(config)
+            asyncio.run(doctor(config))
             return 0
         if args.command=="status":
             store=Store(config.db_path)

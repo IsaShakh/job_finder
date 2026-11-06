@@ -107,7 +107,7 @@ class Config:
             raise ValueError('LLM_BASE_URL: нужен HTTPS URL без пароля и параметров')
         state = root / '.state'
         return cls(root=root, state_dir=state, db_path=state / 'agent.sqlite3',
-                   api_token_path=state / 'api-token.json',
+                   api_token_path=state / 'tokens' / 'hh.json',
                    telegram_token=token,
                    owner_id=owner, llm_base_url=base, llm_api_key=value('LLM_API_KEY'),
                    llm_model=value('LLM_MODEL'),
