@@ -10,14 +10,24 @@ from unittest.mock import patch
 from job_finder.adapters.base import SearchHit, SearchReport
 from job_finder.async_store import AsyncStore
 from job_finder.config import Config
+from job_finder.dedupe import content_hash as dedupe_content_hash
 from job_finder.engine import Engine, TEST_LABEL
-from job_finder.models import AttentionRequired, Letter, RateLimited, Salary, Vacancy
+from job_finder.models import (AttentionRequired, Letter, RateLimited, Salary,
+                               Vacancy, WriterResult)
 from tests.test_rules import vacancy
 
 
 class Writer:
+    def __init__(self):
+        self.calls = 0
+
     async def generate(self, job):
-        return Letter("Точное письмо", ["python_backend"], [], [])
+        self.calls += 1
+        return WriterResult(score=80, score_reason="опыт совпадает", score_status="ok",
+                            letter=Letter("Точное письмо", ["python_backend"], [], []),
+                            letter_status="ok", advice=[], advice_status="ok",
+                            usage={"model": "gpt-4o-mini", "prompt_tokens": 10,
+                                   "completion_tokens": 20})
 
 
 class Probe:
@@ -231,6 +241,36 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["status"], "rejected")
         self.assertEqual(row["rules_version"], "v3")
         self.assertIsNone(row["letter"])
+
+    async def test_card_stores_score_advice_and_logs_llm_cost(self):
+        writer = Writer()
+        job = vacancy(id="1001", salary=Salary(200000))
+        source = Probe("probe", fetch_for={"1001": job})
+        await self.store.discover("probe", vacancy(id="1001"))
+        engine = self.engine([source], writer=writer)
+        await engine.prepare("probe:1001")
+        row = await self.store.get("probe:1001")
+        self.assertEqual(row["status"], "ready")
+        self.assertEqual(row["llm"]["score"], 80)
+        self.assertEqual(row["llm"]["score_status"], "ok")
+        self.assertEqual(row["llm"]["stamp"]["rules_version"], "v3")
+        cursor = await self.store._conn.execute("SELECT kind,model,prompt_tokens,cost FROM llm_calls")
+        calls = [tuple(item) for item in await cursor.fetchall()]
+        await cursor.close()
+        self.assertEqual(calls, [("card", "gpt-4o-mini", 10, 1.3e-05)])
+
+    async def test_card_cache_skips_llm_when_versions_unchanged(self):
+        writer = Writer()
+        job = vacancy(id="1001", salary=Salary(200000))
+        source = Probe("probe", fetch_for={"1001": job})
+        await self.store.discover("probe", vacancy(id="1001"))
+        engine = self.engine([source], writer=writer)
+        await engine.prepare("probe:1001")
+        first_letter = (await self.store.get("probe:1001"))["letter"].text
+        # Повторная подготовка с теми же версиями — без вызова LLM (R7).
+        await engine._card("probe:1001", job, dedupe_content_hash(job), "v3")
+        self.assertEqual(writer.calls, 1)
+        self.assertEqual((await self.store.get("probe:1001"))["letter"].text, first_letter)
 
     async def test_attention_pauses_delivery_and_blocks_work(self):
         engine = self.engine([])

@@ -108,14 +108,19 @@ class Store:
                 # Свежая база создаётся сразу в целевой схеме.
                 self.conn.executescript(CREATE_V4)
                 self.conn.execute("PRAGMA user_version=4")
-        with self.conn:
-            for key, value in DEFAULT_SETTINGS.items():
-                self.conn.execute("INSERT OR IGNORE INTO settings VALUES (?,?)", (key, dump(value)))
-            pilot = Vacancy("137924141", "Инженер поддержки и развития (LLM-агенты)",
-                            "Python", company="Ат Проф", remote=True)
-            self.conn.execute("INSERT OR IGNORE INTO jobs(id,data,status,reason,created,updated)"
-                              " VALUES(?,?,'skipped',?,?,?)",
-                              ("hh:137924141", dump(pilot.to_dict()), PILOT_REASON, now(), now()))
+        # Сиды (настройки по умолчанию и пилот) — только для новой базы;
+        # существующая БД уже просидирована, и повторные записи не нужны
+        # (заодно не берут блокировку записи при каждом открытии).
+        seeded = self.conn.execute("SELECT 1 FROM jobs WHERE id='hh:137924141'").fetchone()
+        if seeded is None:
+            with self.conn:
+                for key, value in DEFAULT_SETTINGS.items():
+                    self.conn.execute("INSERT OR IGNORE INTO settings VALUES (?,?)", (key, dump(value)))
+                pilot = Vacancy("137924141", "Инженер поддержки и развития (LLM-агенты)",
+                                "Python", company="Ат Проф", remote=True)
+                self.conn.execute("INSERT OR IGNORE INTO jobs(id,data,status,reason,created,updated)"
+                                  " VALUES(?,?,'skipped',?,?,?)",
+                                  ("hh:137924141", dump(pilot.to_dict()), PILOT_REASON, now(), now()))
 
     @staticmethod
     def key(job_id):
@@ -138,6 +143,7 @@ class Store:
         row = dict(row)
         data = json.loads(row.pop("data"))
         row["possible_duplicates"] = data.pop("possible_duplicates", None)
+        row["llm"] = data.pop("llm", None)
         row["vacancy"] = Vacancy.from_dict(data)
         row["letter"] = Letter(**json.loads(row["letter"])) if row["letter"] else None
         return row

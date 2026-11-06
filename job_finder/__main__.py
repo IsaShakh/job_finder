@@ -189,10 +189,10 @@ def telegram_tasks(bot):
 async def run_worker(config, store, label):
     from .adapters import build_adapters
     from .engine import Engine
-    from .letters import LetterGenerator
     from .telegram import Telegram
+    from .writer import Writer
     adapters=build_adapters(config)
-    engine=Engine(config,store,adapters,LetterGenerator(config))
+    engine=Engine(config,store,adapters,Writer(config))
     bot=Telegram(config,store)
     polling,delivery=telegram_tasks(bot)
     print("Скрипт запущен: поиск запускается командой /search. Остановка здесь: Ctrl+C.")
@@ -212,7 +212,7 @@ async def api_command(config, command):
     from .adapters import build_adapters
     from .async_store import AsyncStore
     from .engine import Engine
-    from .letters import LetterGenerator
+    from .writer import Writer
     if command=="run" and (not config.telegram_token or config.owner_id<=0):
         raise ValueError("Сначала настройте Telegram: configure, затем pair")
     if "hh" in config.sources and not config.api_token_path.exists():
@@ -222,7 +222,7 @@ async def api_command(config, command):
     try:
         adapters=build_adapters(config)
         try:
-            engine=Engine(config,store,adapters,LetterGenerator(config))
+            engine=Engine(config,store,adapters,Writer(config))
             if command=="search":
                 await store.round_request()
                 while True:

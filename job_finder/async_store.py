@@ -61,11 +61,18 @@ class AsyncStore:
 
     async def close(self):
         if self._writer is not None:
-            self._writer.cancel()
+            # Не отменяем потребителя посреди операции (иначе открытая
+            # транзакция aiosqlite останется висеть с блокировкой записи);
+            # завершаем его sentinel-сообщением.
+            await self._queue.put((None, None, None))
             try:
-                await self._writer
-            except asyncio.CancelledError:
-                pass
+                await asyncio.wait_for(self._writer, timeout=10)
+            except asyncio.TimeoutError:
+                self._writer.cancel()
+                try:
+                    await self._writer
+                except asyncio.CancelledError:
+                    pass
             self._writer = None
         if self._conn is not None:
             await self._conn.close()
@@ -81,6 +88,8 @@ class AsyncStore:
     async def _consume(self):
         while True:
             operation, args, future = await self._queue.get()
+            if operation is None:  # sentinel: корректная остановка
+                return
             try:
                 result = await getattr(self, "_op_" + operation)(*args)
             except BaseException as exc:
@@ -129,6 +138,15 @@ class AsyncStore:
 
     async def mark_possible_duplicates(self, job_id, ids):
         return await self._call("mark_possible_duplicates", job_id, ids)
+
+    async def save_assessment(self, job_id, llm):
+        """Артефакты writer v2 (оценка/советы/статусы/кэш-штамп) в data.llm."""
+        return await self._call("save_assessment", job_id, llm)
+
+    async def log_llm_call(self, job_id, kind, model, prompt_tokens, completion_tokens, cost):
+        """Журнал стоимости llm_calls (раздел 9)."""
+        return await self._call("log_llm_call", job_id, kind, model, prompt_tokens,
+                                completion_tokens, cost)
 
     async def cluster_skip(self, job_id):
         """Пропуск всего кластера (для /skip, 16.3): статус clusters + все строки."""
@@ -235,6 +253,7 @@ class AsyncStore:
         row = _as_dict(row)
         data = json.loads(row.pop("data"))
         row["possible_duplicates"] = data.pop("possible_duplicates", None)
+        row["llm"] = data.pop("llm", None)
         row["vacancy"] = Vacancy.from_dict(data)
         row["letter"] = Letter(**json.loads(row["letter"])) if row["letter"] else None
         return row
@@ -308,7 +327,28 @@ class AsyncStore:
     async def _op_make_ready(self, job_id, letter, reason):
         await self._conn.execute(
             "UPDATE jobs SET letter=?,status='ready',reason=?,updated=? WHERE id=? AND status='found'",
-            (dump(letter.to_dict()), reason, now(), Store.key(job_id)))
+            (dump(letter.to_dict()) if letter is not None else None, reason, now(), Store.key(job_id)))
+        await self._conn.commit()
+
+    async def _op_save_assessment(self, job_id, llm):
+        key = Store.key(job_id)
+        cursor = await self._conn.execute("SELECT data FROM jobs WHERE id=?", (key,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        if row is None:
+            return
+        data = json.loads(row[0])
+        data["llm"] = llm
+        await self._conn.execute("UPDATE jobs SET data=? WHERE id=?",
+                                 (json.dumps(data, ensure_ascii=False), key))
+        await self._conn.commit()
+
+    async def _op_log_llm_call(self, job_id, kind, model, prompt_tokens,
+                               completion_tokens, cost):
+        await self._conn.execute(
+            "INSERT INTO llm_calls(job_id,kind,model,prompt_tokens,completion_tokens,cost,created)"
+            " VALUES(?,?,?,?,?,?,?)",
+            (Store.key(job_id), kind, model, prompt_tokens, completion_tokens, cost, now()))
         await self._conn.commit()
 
     async def _op_save_letter(self, job_id, letter):

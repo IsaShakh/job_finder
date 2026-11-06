@@ -233,7 +233,10 @@ class EngineDedupTests(unittest.IsolatedAsyncioTestCase):
 
     class Writer:
         async def generate(self, job):
-            return Letter("Письмо", ["python_backend"], [], [])
+            from job_finder.models import WriterResult
+            return WriterResult(score=70, score_reason="ок", score_status="ok",
+                                letter=Letter("Письмо", ["python_backend"], [], []),
+                                letter_status="ok", advice=[], advice_status="ok")
 
     class Probe:
         name = "remoteok"

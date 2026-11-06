@@ -65,6 +65,26 @@ class Letter:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class Advice:
+    text: str
+    grounds: str
+
+
+@dataclass(frozen=True)
+class WriterResult:
+    """Результат writer v2: три артефакта с независимыми статусами (R10)."""
+    score: Optional[int] = None
+    score_reason: str = ""
+    score_status: str = "unavailable"   # ok|unavailable|failed
+    letter: Optional[Letter] = None
+    letter_status: str = "ok"
+    advice: list = field(default_factory=list)
+    advice_status: str = "ok"
+    usage: Optional[dict] = None        # {model, prompt_tokens, completion_tokens}
+    error: str = ""
+
+
 class AttentionRequired(Exception):
     """Authentication, challenge or site change requiring a human."""
 

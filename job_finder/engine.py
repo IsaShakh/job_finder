@@ -13,6 +13,7 @@ from .dedupe import (EmbeddingClient, content_hash, embedding_input,
 from .models import AttentionRequired, RateLimited, VacancyUnavailable
 from .rules import evaluate_all
 from .store import Store
+from .writer import PROMPT_VERSION, Writer
 
 # Правило тестов после удаления автоотклика (решение 05.11.2026):
 # тест не отклоняет вакансию, а помечается в карточке.
@@ -114,6 +115,31 @@ class Engine:
         await self._run_round(round_id, pending=pending)
         return True
 
+    async def _card(self, job_id, vacancy, hash_value, current_rules):
+        """Оценка + письмо + советы с кэшем по версии содержимого (R7)."""
+        profile_version = await self.store.setting('profile_version')
+        stamp = {"content_hash": hash_value, "rules_version": current_rules,
+                 "profile_version": profile_version, "model": self.config.llm_model,
+                 "prompt": PROMPT_VERSION}
+        row = await self.store.get(job_id)
+        cached = (row.get("llm") or {}).get("stamp") if row else None
+        if cached == stamp and row.get("letter") and (row.get("llm") or {}).get("score_status") in ("ok", "unavailable"):
+            return row["letter"]  # содержимое/правила/профиль не менялись — без вызова LLM
+        result = await self.writer.generate(vacancy)
+        llm = {"score": result.score, "score_reason": result.score_reason,
+               "score_status": result.score_status,
+               "advice": [{"text": item.text, "grounds": item.grounds} for item in result.advice],
+               "advice_status": result.advice_status,
+               "letter_status": result.letter_status,
+               "stamp": stamp}
+        await self.store.save_assessment(job_id, llm)
+        if result.usage and result.usage.get("prompt_tokens") is not None:
+            await self.store.log_llm_call(job_id, "card", result.usage.get("model"),
+                                          result.usage.get("prompt_tokens"),
+                                          result.usage.get("completion_tokens"),
+                                          Writer._cost(result.usage))
+        return result.letter
+
     async def prepare(self, job_id):
         row = await self.store.get(job_id)
         if not row or row["status"]!="found":
@@ -164,7 +190,7 @@ class Engine:
                 reason += " · " + TEST_LABEL
             current_rules = await self.store.setting('rules_version')
             if assessment.status=="ready":
-                letter=await self.writer.generate(vacancy)
+                letter=await self._card(job_id, vacancy, hash_value, current_rules)
                 await self.store.make_ready(job_id,letter,reason)
             else:
                 await self.store.decide(job_id,assessment.status,reason,
@@ -202,7 +228,7 @@ class Engine:
             if vacancy.test_required and assessment.status in ("ready","needs_clarification"):
                 reason += " · " + TEST_LABEL
             if assessment.status=="ready":
-                letter=await self.writer.generate(vacancy)
+                letter=await self._card(job_id, vacancy, content_hash(vacancy), current_rules)
                 await self.store.reassess(job_id,"ready",reason,letter=letter,
                                           grade=assessment.grade,
                                           grade_evidence=assessment.grade_evidence,
