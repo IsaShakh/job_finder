@@ -1,0 +1,21 @@
+{
+  "read_at": "2026-11-06T12:07:49.087392+00:00",
+  "channels": {
+    "nopremote": {
+      "title": "NOP::Recruiter Remote",
+      "posts_read": 30
+    },
+    "remotegeekjob": {
+      "title": "RemoteGeekjob",
+      "posts_read": 30
+    },
+    "pythonrabota": {
+      "title": "Python работа",
+      "posts_read": 26
+    },
+    "job_python": {
+      "title": "Python Job | Вакансии | Стажировки",
+      "posts_read": 30
+    }
+  }
+}
