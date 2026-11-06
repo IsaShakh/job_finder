@@ -366,7 +366,7 @@ class SourceAdapter(Protocol):
 | Компонент плана | Файл(ы) | Статус |
 | --- | --- | --- |
 | CLI (init/configure/pair/doctor/api-login/search/run/status) | `job_finder/__main__.py` | ✓; doctor — сетевой по SOURCES (этап 7) |
-| Конфиг (SOURCES/PROFILES/TG_CHANNELS) | `job_finder/config.py` | ✓ |
+| Конфиг (SOURCES/PROFILES/TG_CHANNELS) | `job_finder/config.py` | ✓ + `LLM_EMBEDDING_MODEL` (text-embedding-3-small, отдельно от чат-модели) |
 | Каноническая модель | `job_finder/models.py` | ✓ + `source_url` (URL строит адаптер) |
 | Правила v3 (7, 7.3, R1/R9/N10) | `job_finder/rules.py` | ✓ |
 | Хранилище (схема v4, миграция) | `job_finder/store.py`, `job_finder/migrate.py` | ✓; асинхронный рантайм — `async_store.py` (aiosqlite, один потребитель, R8) |
@@ -377,3 +377,6 @@ class SourceAdapter(Protocol):
 | Адаптеры (6, 16.1) | `job_finder/adapters/` (base, hh, remoteok, habr, wwr, telegram_channels, fake) | ✓ |
 | Лог с ротацией | `.state/agent.log` (RotatingFileHandler 1 МБ × 3) | ✓ этап 7 |
 | Токены площадок | `.state/tokens/<platform>.json` (hh.json; legacy-чтение `.state/api-token.json`) | ✓ этап 7 |
+
+Фактический первый живой запуск (миграция, первый раунд, исправленные
+дефекты) — [docs/research/2026-11-06-first-live-run.md](../research/2026-11-06-first-live-run.md).
