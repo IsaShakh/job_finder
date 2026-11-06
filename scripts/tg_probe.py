@@ -39,9 +39,9 @@ POSTS_PER_CHANNEL = 30  # читаем с запасом; в фикстуры о
 USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
               "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
 
-BLOCK_RE = re.compile(r'<div class="tgme_widget_message_wrap js-widget_message_wrap"[^>]*data-post="([^"]+)"')
+BLOCK_RE = re.compile(r'<div class="[^"]*js-widget_message"[^>]*data-post="([^"]+)"')
 TEXT_RE = re.compile(r'<div class="tgme_widget_message_text js-message_text"[^>]*>(.*?)</div>', re.S)
-TIME_RE = re.compile(r'<time class="time" datetime="([^"]+)"')
+TIME_RE = re.compile(r'<time[^>]*datetime="([^"]+)"')
 
 
 def root_dir():
@@ -87,7 +87,7 @@ async def login():
     await client.disconnect()
 
 
-async def read_channels():
+async def read_channels(channels=None):
     from telethon import TelegramClient
     from telethon.errors import ChannelPrivateError
     api_id, api_hash = credentials()
@@ -98,7 +98,7 @@ async def read_channels():
     fixtures_dir.mkdir(parents=True, exist_ok=True)
     report = {"read_at": datetime.now(timezone.utc).isoformat(), "channels": {}}
     try:
-        for name in CHANNELS:
+        for name in (channels or CHANNELS):
             try:
                 entity = await client.get_entity(name)
                 posts = []
@@ -156,7 +156,7 @@ def parse_preview_posts(html):
     return posts
 
 
-async def read_preview():
+async def read_preview(channels=None):
     """Чтение публичных каналов через t.me/s — без ключей my.telegram.org."""
     import httpx
     env = {**dotenv_values(root_dir() / ".env", interpolate=False), **os.environ}
@@ -167,7 +167,7 @@ async def read_preview():
               "source": "t.me/s web preview (без MTProto-ключей)", "channels": {}}
     async with httpx.AsyncClient(timeout=30, follow_redirects=True, proxy=proxy,
                                  headers={"User-Agent": USER_AGENT}) as client:
-        for name in CHANNELS:
+        for name in (channels or CHANNELS):
             try:
                 response = await client.get("https://t.me/s/" + name)
                 if response.status_code == 429:
@@ -195,13 +195,17 @@ async def read_preview():
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["login", "read", "preview"])
+    parser.add_argument("--channels", default="",
+                        help="Каналы через запятую (по умолчанию — встроенный список)")
     args = parser.parse_args(argv)
+    channels = [name.strip().lstrip("@") for name in args.channels.split(",")
+                if name.strip()] or None
     if args.command == "login":
         asyncio.run(login())
     elif args.command == "preview":
-        asyncio.run(read_preview())
+        asyncio.run(read_preview(channels))
     else:
-        asyncio.run(read_channels())
+        asyncio.run(read_channels(channels))
     return 0
 
 

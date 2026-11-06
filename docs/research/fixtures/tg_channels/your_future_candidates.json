@@ -1,0 +1,42 @@
+[
+  {
+    "id": 2550,
+    "date": "2026-11-06T16:00:04+00:00",
+    "text": "**#Резюме**\n\n\n1️⃣  #PHP #Symfony #Go\n2️⃣ Middle\n3️⃣ Казань \n4️⃣ tg - @ilymmortal \n5️⃣ рассматриваю как удаленку, так и офис/гибрид в Казани, а также Иннополис(удалёнка или гибрид).\nШирокий опыт в разработке приложений с нуля, от сбора аналитики от стейкхолдеров, архитектуры приложения до релиза. Также большой опыт агентской разработки",
+    "views": null,
+    "has_media": true,
+    "url": "https://t.me/your_future_candidates/2550"
+  },
+  {
+    "id": 2545,
+    "date": "2026-11-05T20:10:58+00:00",
+    "text": "#cv #resume #opentowork #reactnative #expo #mobile #react #nextjs #tanstack #typescript #javascript #swift #kotlin #fullstack #frontend #remote #senior\n\nPosition: Senior React Native / React Engineer\nFormat: remote, full-time\nContacts: @lilz_e · zelenskii19992017@gmail.com\nLinkedIn: linkedin.com/in/lilzee\nSalary expectations: $45/hr\n\nAbout me\n\nI've been building mobile and web apps with React Native, React and TypeScript for more than six years. For five years I've worked at Batch, a US group-travel service. For the last two years I've run the mobile app on my own and done a lot of the web side: I started the partner portal from scratch.\n\nExperience at Batch\n\nMobile:\n• search and booking: filters, real-time availability, Stripe payments;\n• maps: places in a city, the trip plan, locations on place pages;\n• social features: event calendar with RSVPs, polls, shared expenses, chat;\n• a TikTok-style vertical video feed, moved from react-native-video to expo-video;\n• push notifications, analytics, A/B tests, OTA updates, monitoring;\n• three rebrands and major redesigns of the app;\n• moved all heavy lists to FlashList;\n• moved to the New Architecture and enabled R8: the Android build got 29% smaller (124 → 88 MB);\n• a big performance overhaul: profiling showed that NativeWind interop wrappers and lucide SVG icons put the most load on the JS thread in large lists. I removed them from heavy rows, which roughly halved rendering work, ended long freezes and sped up cold start. The trip screen now opens almost instantly (0.15 s instead of 3.6 s), picking a date in the booking calendar takes about 0.25 s instead of 1.5 s, map pins appear noticeably faster, and the place page and trip-plan map run smoother;\n• a native Expo module in Swift and Kotlin for the HubSpot Mobile Chat SDK, to move support chat from Intercom to HubSpot.\n\nWeb:\n• partner portal on TanStack Start: partner onboarding, plans and subscriptions on Stripe, leads, media library, user-generated content collection, promo pages for paid modules, analytics;\n• Next.js marketplace: place, partner and trip pages, map search on Google Maps, request-a-quote form, booking;\n• Turborepo monorepo: the mobile app, the marketplace and the portal on shared packages.\n\nCost savings:\n• proposed and removed the Google Places API, which took a noticeable share of the budget;\n• image and video optimisation through ImageKit in the mobile app and on the web, so right-sized files load instead of originals;\n• moving support chat from Intercom to HubSpot.\n\nOther projects\n\n• ARI Athletics — an app for coaches who recruit athletes;\n• Premium Chat — a messenger: a React Native app and a real-time WebSocket layer, both written from scratch.\n\nStack\n\n• Mobile: React Native (New Architecture), Expo, Expo Modules (Swift, Kotlin), TypeScript, Reanimated, Gesture Handler, FlashList, React Navigation, NativeWind, expo-video, react-native-maps, React Compiler\n• Web: React, Next.js (App Router, RSC), TanStack Start / Router / Query / Table / Virtual, Tailwind, Radix UI, XState, Vite, Astro, Google Maps\n• Data & forms: Redux Toolkit, RTK Query, react-hook-form, zod\n• Infrastructure: Turborepo, pnpm, GitHub Actions, Vercel, EAS, fastlane, OTA updates, AWS (Amplify, Cognito, S3)\n• Monitoring: Sentry, Crashlytics, Firebase Performance\n• Analytics & experiments: Firebase, Mixpanel, AppsFlyer, GrowthBook, Microsoft Clarity\n• Integrations: Stripe, Iterable, Intercom, HubSpot, GetStream, ImageKit, push notifications (FCM / APNs), deep links\n• Testing & code quality: Jest, Vitest, Testing Library, oxlint, husky\n\nLooking for\n\nA mobile or frontend role in a product team, remote. I'm also open to fullstack roles on React Native and Next.js.\n\nIf you have a matching role, message me: @lilz_e.",
+    "views": null,
+    "has_media": false,
+    "url": "https://t.me/your_future_candidates/2545"
+  },
+  {
+    "id": 2542,
+    "date": "2026-11-05T13:03:50+00:00",
+    "text": "[#резюме](tg://search_hashtag?hashtag=%D1%80%D0%B5%D0%B7%D1%8E%D0%BC%D0%B5) [#ищуработу](tg://search_hashtag?hashtag=%D0%B8%D1%89%D1%83%D1%80%D0%B0%D0%B1%D0%BE%D1%82%D1%83) [#senior](tg://search_hashtag?hashtag=senior) [#**CustomerExperienceManager**](tg://search_hashtag?hashtag=CustomerExperienceManager) [#remote](tg://search_hashtag?hashtag=remote)\n**Всем привет! **\nРекомендую **Customer Experience Manager.**\nдля связи @Vernusvecherom",
+    "views": null,
+    "has_media": true,
+    "url": "https://t.me/your_future_candidates/2542"
+  },
+  {
+    "id": 2539,
+    "date": "2026-11-05T06:53:09+00:00",
+    "text": "1️⃣  #Frontend Developer\n2️⃣ Middle+/Senior\n3️⃣ Казань \n4️⃣ +79046680702 \n5️⃣ рассматриваю удаленку/офис/гибрид; \n\nБолее 5-ти лет в разработке на позициях Frontend dev; Отличные знания JS/TS работал с различными фреймворками, но в основном базируюсь на React, так же работал и с Vue2.js/Svetle/Angular",
+    "views": null,
+    "has_media": true,
+    "url": "https://t.me/your_future_candidates/2539"
+  },
+  {
+    "id": 2538,
+    "date": "2026-11-03T08:31:30+00:00",
+    "text": "1️⃣ #Data_Analyst #SQL #Python #BI\n2️⃣ Junior\n3️⃣ Санкт-Петербург\n4️⃣ tg: @vchkashka\nEmail: matsievskaya444@mail.ru\n5️⃣ Рассматриваю полную занятость и стажировки. Интересуют позиции Junior Data Analyst / BI Analyst. Готова рассматривать удалённый и гибридный форматы работы, а также работу в офисе в Санкт-Петербурге.\nЕсть около года опыта проектной деятельности в аналитике данных, более 12 учебных проектов. Владею SQL, Python (Pandas, NumPy, SciPy), Excel, Google Sheets, Yandex DataLens. Есть опыт статистического анализа, A/B-тестирования, когортного анализа и разработки BI-дашбордов.\nGitHub: [https://github.com/vchkashka/my_projects](https://github.com/vchkashka/my_projects)",
+    "views": null,
+    "has_media": true,
+    "url": "https://t.me/your_future_candidates/2538"
+  }
+]
