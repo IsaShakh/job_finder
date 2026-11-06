@@ -172,7 +172,7 @@ class Telegram:
                 return 'letter', 'Сохранённое письмо для этой вакансии отсутствует.'
             letter = row['letter']
             return 'letter', (row['vacancy'].url + '\n\n' + letter.text
-                + '\n\nФакты профиля: ' + ', '.join(letter.fact_ids)
+                + (('\n\nФакты профиля: ' + ', '.join(letter.fact_ids)) if letter.fact_ids else '')
                 + '\n\nДобавленные утверждения (только для вас):\n'
                 + ('\n'.join(letter.added_claims) if letter.added_claims else 'Нет.')
                 + '\n\nПодготовка (только для вас):\n'
