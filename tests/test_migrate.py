@@ -165,6 +165,8 @@ class MigrationTests(unittest.TestCase):
             self.assertEqual(rules_version, "legacy")
             self.assertEqual(json.loads(data).get("legacy_letter"), {"text": "Старое письмо",
                 "fact_ids": ["python_backend"], "added_claims": [], "preparation": []})
+        # Чтение готовых строк не падает на служебном legacy_letter в data.
+        self.assertIsNotNone(store.get("hh:1646")["vacancy"])
         for status in ("rejected", "needs_clarification"):
             leftover = store.conn.execute("SELECT COUNT(*) FROM jobs WHERE status=? AND rules_version!='legacy'",
                                           (status,)).fetchone()[0]

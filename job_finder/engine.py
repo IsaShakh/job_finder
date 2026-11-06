@@ -298,8 +298,8 @@ class Engine:
         if job_id:
             await self.prepare(job_id)
             return
-        # Уведомления по готовым карточкам (по одной за тик).
-        job_id=await self.store.next_ready_without_card()
+        # Уведомления по готовым карточкам (по одной за тик; только включённые источники).
+        job_id=await self.store.next_ready_without_card(enabled)
         if job_id:
             await self.notify_ready(job_id)
             return

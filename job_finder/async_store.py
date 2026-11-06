@@ -215,8 +215,8 @@ class AsyncStore:
     async def card_exists(self, job_id):
         return await self._call("card_exists", job_id)
 
-    async def next_ready_without_card(self):
-        return await self._call("next_ready_without_card")
+    async def next_ready_without_card(self, sources=None):
+        return await self._call("next_ready_without_card", sources)
 
     async def cluster_rows(self, job_id):
         """Все строки кластера (ссылки для карточки)."""
@@ -495,12 +495,14 @@ class AsyncStore:
         await cursor.close()
         return count > 0
 
-    async def _op_next_ready_without_card(self):
+    async def _op_next_ready_without_card(self, sources):
+        clause, args = self._source_clause(sources)
         cursor = await self._conn.execute(
-            "SELECT j.id FROM jobs j WHERE j.status='ready' AND NOT EXISTS"
+            "SELECT j.id FROM jobs j WHERE j.status='ready'" + clause +
+            " AND NOT EXISTS"
             " (SELECT 1 FROM outbox o WHERE o.kind='card' AND"
             "  (o.job_id=j.id OR (j.cluster_id IS NOT NULL AND o.cluster_id=j.cluster_id)))"
-            " ORDER BY j.updated,j.id LIMIT 1")
+            " ORDER BY j.updated,j.id LIMIT 1", args)
         row = await cursor.fetchone()
         await cursor.close()
         return row[0] if row else None
@@ -862,9 +864,9 @@ class AsyncStore:
                 key = source + ":" + native_id
                 placeholder = {"id": native_id, "title": "Вакансия ещё не прочитана", "description": ""}
                 await self._conn.execute(
-                    "INSERT OR IGNORE INTO jobs(id,data,status,created,updated)"
-                    " VALUES(?,?,'found',?,?)",
-                    (key, dump(placeholder), now(), now()))
+                    "INSERT OR IGNORE INTO jobs(id,data,status,created,updated,source)"
+                    " VALUES(?,?,'found',?,?,?)",
+                    (key, dump(placeholder), now(), now(), source))
                 # У известного поста — только last_seen (16.1).
                 await self._conn.execute("UPDATE jobs SET last_seen=? WHERE id=?", (t_start, key))
             summary = {"ids": [str(hit.native_id) for hit in report.hits],

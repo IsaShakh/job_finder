@@ -1,4 +1,5 @@
 import asyncio
+import json
 import tempfile
 import time
 import unittest
@@ -359,6 +360,29 @@ class EngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.store.get("probe:1001"))["status"], "ready")
         # После включения hh строка снова видна как stale.
         self.assertEqual(await self.store.stale_row(["hh"]), "hh:900001")
+
+    async def test_legacy_ready_rows_with_snapshots_do_not_crash_or_notify(self):
+        # После миграции 1c в data старых ready-строк лежит legacy_letter;
+        # выключенный hh не должен ни падать, ни создавать уведомления.
+        legacy = vacancy(id="900001", salary=Salary(200000))
+        await self.store.discover("hh", legacy)
+        letter = Letter("Старое письмо", ["python_backend"], [], [])
+        await self.store.make_ready("hh:900001", letter, "старое правило", "legacy")
+        cursor = await self.store._conn.execute("SELECT data FROM jobs WHERE id='hh:900001'")
+        data = json.loads((await cursor.fetchone())[0])
+        await cursor.close()
+        data["legacy_letter"] = letter.to_dict()
+        await self.store._conn.execute("UPDATE jobs SET data=? WHERE id='hh:900001'",
+                                       (json.dumps(data, ensure_ascii=False),))
+        await self.store._conn.commit()
+        engine = self.engine([])  # hh не включён
+        for _ in range(3):
+            await engine.tick()
+        row = await self.store.get("hh:900001")  # from_dict не падает на legacy_letter
+        self.assertEqual(row["status"], "ready")
+        cursor = await self.store._conn.execute("SELECT COUNT(*) FROM outbox WHERE kind='card'")
+        self.assertEqual((await cursor.fetchone())[0], 0)
+        await cursor.close()
 
     async def test_round_since_is_previous_t_start(self):
         seen = []

@@ -44,8 +44,10 @@ class Vacancy:
     def from_dict(cls, data):
         data = dict(data)
         # Служебные поля строки хранятся рядом с данными вакансии;
-        # «возможно, дубль» (этап 3) не является полем модели.
+        # «возможно, дубль» (этап 3) и снимок старого письма (1c)
+        # не являются полями модели.
         data.pop("possible_duplicates", None)
+        data.pop("legacy_letter", None)
         if data.get("salary") is not None:
             data["salary"] = Salary(**data["salary"])
         return cls(**data)
