@@ -141,7 +141,12 @@ def relocation_target(text, city):
 
 
 def evaluate_format(profile, vacancy, text):
-    """Формат RU/intl (7.1, 7.2): (ok|rejected|needs_clarification, reason, label)."""
+    """Формат RU/intl (7.1, 7.2): (ok|rejected|needs_clarification, reason, label).
+
+    Решение 06.11.2026 (вторая волна источников): для intl предложенная
+    релокация допускает офис — «релокация в другой город» и «релокация без
+    города» проходят с меткой офис/гибрид + релокация. Для RU поведение
+    прежнее: только релокация в профильный город (Москва)."""
     city = profile.city.lower()
     geo = (vacancy.remote_geo or "").lower()
     location = vacancy.location or ""
@@ -151,7 +156,11 @@ def evaluate_format(profile, vacancy, text):
         if kind == "city":
             return "ok", RELOC_PHRASE.get(profile.city, "Релокация в " + profile.city)
         if kind == "other":
+            if profile.region == "intl":
+                return "ok", "Офис/гибрид, релокация в %s" % target.capitalize()
             return "rejected", "Релокация в другой город (%s)" % target
+        if profile.region == "intl":
+            return "ok", "Офис/гибрид, релокация предлагается"
         return "needs_clarification", "Релокация без целевого города"
     if vacancy.remote is True:
         if FOREIGN_GEO_RE.search(geo):

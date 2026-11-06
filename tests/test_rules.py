@@ -138,13 +138,19 @@ class IntlFormatTests(unittest.TestCase):
         self.assertEqual(status(vacancy(description="Python. relocation to Dubai",
                                         salary=Salary(200000)), INTL), "ready")
 
-    def test_relocation_without_city_needs_clarification(self):
-        self.assertEqual(status(vacancy(description="Python. relocation",
-                                        salary=Salary(200000)), INTL), "needs_clarification")
+    def test_relocation_without_city_office_allowed(self):
+        # Решение 06.11.2026: предложенная релокация допускает офис (intl).
+        assessment = evaluate(vacancy(description="Python. relocation",
+                                      salary=Salary(200000)), INTL)
+        self.assertEqual(assessment.status, "ready")
+        self.assertIn("релокация предлагается", assessment.reason)
 
-    def test_relocation_to_other_city_rejected(self):
-        self.assertEqual(status(vacancy(description="Python. relocation to Warsaw",
-                                        salary=Salary(200000)), INTL), "rejected")
+    def test_relocation_to_other_city_office_allowed(self):
+        # Решение 06.11.2026: релокация в другой город допускает офис (intl).
+        assessment = evaluate(vacancy(description="Python. relocation to Warsaw",
+                                      salary=Salary(200000)), INTL)
+        self.assertEqual(assessment.status, "ready")
+        self.assertIn("релокация в Warsaw", assessment.reason)
 
     def test_nothing_specified_needs_clarification(self):
         self.assertEqual(status(vacancy(remote=None, salary=Salary(200000)), INTL), "needs_clarification")
