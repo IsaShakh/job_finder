@@ -6,6 +6,7 @@
 from .base import (AdapterError, SearchHit, SearchReport, SourceAdapter,
                    parse_rss, rfc822_to_iso, strip_html)
 from .hh import HHAPIError, HHClient
+from .ancor import AncorAdapter
 from .fake import FakeAdapter
 from .habr import HabrAdapter
 from .remoteok import RemoteOKAdapter
@@ -19,6 +20,7 @@ REGISTRY = {
     "habr": HabrAdapter,
     "wwr": WWRAdapter,
     "telegram": TelegramChannelsAdapter,
+    "ancor": AncorAdapter,
 }
 
 
