@@ -23,7 +23,8 @@ STACK_RES = (
 )
 # «Удалёнка ограничена чужой территорией» (7.1, 7.2).
 FOREIGN_GEO_RE = re.compile(
-    r"\b(?:us|usa|uk|eu|czech|poland|georgia|serbia|armenia|kazakhstan)[- ]only\b"
+    r"\b(?:us|usa|uk|eu|emea|apac|europe|latin\s+america|canada|australia|asia|oceania|africa"
+    r"|czech|poland|georgia|serbia|armenia|kazakhstan)[- ]only\b"
     r"|\b(?:emea|apac)\b"
     r"|\boutside\s+(?:the\s+)?(?:us|usa)\b|\bвне\s+рф\b|\bтолько\s+не\s+рф\b", re.I)
 RELOC_RE = re.compile(r"релок\w*|relocation", re.I)

@@ -1,0 +1,42 @@
+[
+  {
+    "id": "samsara-staff-software-engineer",
+    "title": "Staff Software Engineer",
+    "company": "Samsara",
+    "salary": "от 162400 $ до 290000 $ в год",
+    "remote_geo": "Anywhere in the World",
+    "url": "https://weworkremotely.com/remote-jobs/samsara-staff-software-engineer"
+  },
+  {
+    "id": "askable-software-engineer-ai-coding-tasks-contract",
+    "title": "Software Engineer, AI Coding Tasks (Contract)",
+    "company": "Askable",
+    "salary": "до 1000 $ в год",
+    "remote_geo": "Anywhere in the World",
+    "url": "https://weworkremotely.com/remote-jobs/askable-software-engineer-ai-coding-tasks-contract"
+  },
+  {
+    "id": "databricks-deployment-strategist",
+    "title": "Deployment Strategist",
+    "company": "Databricks",
+    "salary": "до 10 $ в год",
+    "remote_geo": "Anywhere in the World",
+    "url": "https://weworkremotely.com/remote-jobs/databricks-deployment-strategist"
+  },
+  {
+    "id": "toptal-applied-ai-engineers-for-telecommunications-company",
+    "title": "Applied AI Engineers for telecommunications company",
+    "company": "Toptal",
+    "salary": null,
+    "remote_geo": "USA Only",
+    "url": "https://weworkremotely.com/remote-jobs/toptal-applied-ai-engineers-for-telecommunications-company"
+  },
+  {
+    "id": "toptal-apigee-engineer-for-global-consumer-food-company",
+    "title": "Apigee Engineer for Global Consumer Food Company",
+    "company": "Toptal",
+    "salary": null,
+    "remote_geo": "Anywhere in the World",
+    "url": "https://weworkremotely.com/remote-jobs/toptal-apigee-engineer-for-global-consumer-food-company"
+  }
+]
